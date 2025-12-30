@@ -1,176 +1,150 @@
 # Polymarket RL Trading
 
-PPO agent trading 4 concurrent 15-minute binary prediction markets (BTC, ETH, SOL, XRP) on Polymarket. Built with MLX for Apple Silicon.
+An experiment in training reinforcement learning agents to trade prediction markets using real-time multi-source data fusion.
 
-**Key features:**
-- Trades 4 markets simultaneously with shared policy
-- Fuses Binance spot/futures + Polymarket orderbook data (18-dim state)
-- Pure realized PnL reward - sparse signal at market resolution
-- On-device training via MLX
+## What This Is
 
-## Training Journal
+A PPO (Proximal Policy Optimization) agent that paper trades Polymarket's 15-minute binary crypto markets. The agent observes live data from Binance (spot + futures) and Polymarket's orderbook, then learns to predict short-term price direction.
 
-### Training Status: 72 updates, 4,875 trades
+**Current status**: Paper trading only. The agent trains and makes decisions on live market data, but doesn't execute real orders.
 
-**Phase 1: Shaped Rewards (Updates 1-36)**
-- Entropy collapsed 1.09 → 0.36 (policy became deterministic)
-- Cause: Reward shaping dominated actual PnL signal
-- Result: $3.90 PnL, 1,545 trades, 20.2% win rate
+## What This Proves
 
-**Phase 2: Pure PnL Reward (Updates 37-72)**
-- Switched to pure realized PnL reward, doubled entropy coefficient (0.05 → 0.10)
-- Entropy recovered to 1.05, model exploring properly
-- Result: $10.93 PnL, 3,330 trades, 21.2% win rate
+1. **RL can learn from sparse binary outcomes** - Despite only receiving reward at market resolution (every 15 minutes), the agent learns profitable patterns. 109% ROI on paper trades over ~2 hours of training.
 
-| Phase | Updates | Entropy | PnL | Trades | Win Rate |
-|-------|---------|---------|-----|--------|----------|
-| 1 | 36 | 0.36 | $3.90 | 1,545 | 20.2% |
-| 2 | 36 | 1.05 | $10.93 | 3,330 | 21.2% |
+2. **Multi-source data fusion works** - Combining Binance price momentum, futures order flow, and Polymarket orderbook state into a single 18-dim observation gives the agent useful signal.
 
-**Context**: $10 base capital, 50% position sizing ($5/trade). Phase 2 PnL of $10.93 = **109% ROI** on base capital.
+3. **Low win rate can be profitable** - The agent wins only 21% of trades but profits because binary markets have asymmetric payoffs. Buy at 0.40, win pays 0.60; lose costs 0.40.
 
-**Key insight**: Win rate ~21% but profitable due to asymmetric payoffs - winners pay more than losers cost.
+4. **On-device training is viable** - MLX on Apple Silicon handles real-time PPO updates during live market hours without cloud GPU costs.
 
-See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for full analysis.
+## What This Doesn't Prove
+
+1. **Live profitability** - Paper trading assumes instant fills at mid-price. Real trading faces latency, slippage, and market impact. Expect 20-50% performance degradation.
+
+2. **Statistical significance** - 72 updates over 2 hours isn't enough to confirm edge. Could be variance. Needs weeks of out-of-sample testing.
+
+3. **Scalability** - $5 positions are invisible to the market. At $100+ the agent's own orders would move prices and consume liquidity.
+
+4. **Persistence of edge** - Markets adapt. If this strategy worked, others would copy it and arbitrage it away.
+
+## Path to Live Trading
+
+To move from paper to real:
+
+1. **Execution layer** - Integrate Polymarket CLOB API for order placement
+2. **Slippage modeling** - Simulate walking the book at realistic sizes
+3. **Latency compensation** - Account for 50-200ms round-trip to Polymarket
+4. **Risk management** - Position limits, drawdown stops, exposure caps
+5. **Extended validation** - Weeks of paper trading across market regimes
+
+See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed training analysis.
+
+---
+
+## Training Status
+
+| Phase | Updates | Trades | PnL | Win Rate | Entropy |
+|-------|---------|--------|-----|----------|---------|
+| 1 (Shaped rewards) | 36 | 1,545 | $3.90 | 20.2% | 0.36 (collapsed) |
+| 2 (Pure PnL) | 36 | 3,330 | $10.93 | 21.2% | 1.05 (healthy) |
+
+**Capital**: $10 base, 50% position sizing ($5/trade)
+**Phase 2 ROI**: 109% on base capital
+
+**Key insight**: Phase 1 failed because shaped rewards let the agent "game" bonuses without profitable trading. Phase 2 used pure realized PnL - sparse but honest signal.
+
+---
 
 ## Architecture
 
 ```
 ├── run.py                    # Main trading engine
-├── dashboard.py              # Real-time Flask-SocketIO web dashboard
+├── dashboard.py              # Real-time web dashboard
 ├── strategies/
-│   ├── base.py               # Base classes (Action, MarketState, Strategy)
-│   ├── rl_mlx.py             # PPO implementation with MLX
+│   ├── base.py               # Action, MarketState, Strategy base classes
+│   ├── rl_mlx.py             # PPO implementation (MLX)
 │   ├── momentum.py           # Momentum baseline
 │   ├── mean_revert.py        # Mean reversion baseline
-│   ├── fade_spike.py         # Spike fading baseline
-│   └── gating.py             # Ensemble gating strategy
+│   └── fade_spike.py         # Spike fading baseline
 └── helpers/
     ├── polymarket_api.py     # Polymarket REST API
-    ├── binance_wss.py        # Binance spot price streaming
-    ├── binance_futures.py    # Futures data (funding, OI, CVD, liquidations)
-    └── orderbook_wss.py      # Polymarket CLOB orderbook streaming
+    ├── binance_wss.py        # Binance spot WebSocket
+    ├── binance_futures.py    # Futures data (funding, OI, CVD)
+    └── orderbook_wss.py      # Polymarket CLOB WebSocket
 ```
 
-## Features
+## State Space (18 dimensions)
 
-### State Space (18 dimensions)
+| Category | Features | Source |
+|----------|----------|--------|
+| Momentum | `returns_1m`, `returns_5m`, `returns_10m` | Binance spot |
+| Order Flow | `ob_imbalance_l1`, `ob_imbalance_l5`, `trade_flow`, `cvd_accel` | Binance futures |
+| Microstructure | `spread_pct`, `trade_intensity`, `large_trade_flag` | Polymarket CLOB |
+| Volatility | `vol_5m`, `vol_expansion` | Binance spot |
+| Position | `has_position`, `position_side`, `position_pnl`, `time_remaining` | Internal |
+| Regime | `vol_regime`, `trend_regime` | Derived |
 
-| Category | Features | Description |
-|----------|----------|-------------|
-| **Momentum** | `returns_1m`, `returns_5m`, `returns_10m` | Ultra-short price momentum |
-| **Order Flow** | `ob_imbalance_l1`, `ob_imbalance_l5`, `trade_flow`, `cvd_accel` | Buy/sell pressure signals |
-| **Microstructure** | `spread_pct`, `trade_intensity`, `large_trade_flag` | Market quality metrics |
-| **Volatility** | `vol_5m`, `vol_expansion` | Short-term vol regime |
-| **Position** | `has_position`, `position_side`, `position_pnl`, `time_remaining` | Current exposure |
-| **Regime** | `vol_regime`, `trend_regime` | Market environment context |
-
-### Action Space (3 actions)
+## Action Space
 
 | Action | Description |
 |--------|-------------|
-| `HOLD (0)` | No action |
-| `BUY (1)` | Long UP token (50% position size) |
-| `SELL (2)` | Long DOWN token (50% position size) |
+| HOLD (0) | No action |
+| BUY (1) | Long UP token (bet price goes up) |
+| SELL (2) | Long DOWN token (bet price goes down) |
 
-*Note: Originally 7 actions with variable sizing (25/50/100%), simplified in Phase 2.*
+Fixed 50% position sizing. Originally had 7 actions with variable sizing (25/50/100%), simplified to reduce complexity.
 
-### Reward Signal
+## Network
 
-Pure realized PnL on position close - sparse but aligned with actual profit:
-- No shaping rewards (removed momentum bonuses, transaction penalties)
-- Reward only fires when position closes
-- Cleaner learning signal, harder credit assignment
-
-## Data Sources
-
-### Real-time Streams
-- **Binance WebSocket** - Spot prices for BTC, ETH, SOL, XRP
-- **Binance Futures WebSocket** - Trade flow, CVD, large trade detection
-- **Polymarket CLOB WebSocket** - Orderbook depth, bid/ask spreads
-
-### Polling Data
-- **Binance Futures API** - Funding rates, open interest, mark price
-- **Binance Klines** - Multi-timeframe returns (1m, 5m, 10m, 15m, 1h)
-- **Polymarket API** - Active markets, token prices
-
-## Usage
-
-### Training Mode
-```bash
-# Train RL agent with $100 position sizing
-python run.py --strategy rl --train --size 100
-
-# Train with custom buffer size (more data per update)
-python run.py --strategy rl --train --size 50
 ```
-
-### Inference Mode
-```bash
-# Load trained model and run
-python run.py --strategy rl --load rl_model --size 100
-```
-
-### Dashboard
-```bash
-# Run in separate terminal
-python dashboard.py --port 5001
-# Open http://localhost:5001
-```
-
-### Baseline Strategies
-```bash
-python run.py --strategy momentum   # Follow short-term trends
-python run.py --strategy mean_revert # Fade extreme moves
-python run.py --strategy fade_spike  # Fade large spikes
-python run.py --strategy random      # Random baseline
+Actor:  18 → 128 (tanh) → 128 (tanh) → 3 (softmax)
+Critic: 18 → 128 (tanh) → 128 (tanh) → 1
 ```
 
 ## PPO Hyperparameters
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `lr_actor` | 1e-4 | Actor learning rate |
-| `lr_critic` | 3e-4 | Critic learning rate |
-| `gamma` | 0.99 | Discount factor |
-| `gae_lambda` | 0.95 | GAE lambda for advantage estimation |
-| `clip_epsilon` | 0.2 | PPO surrogate clipping range |
-| `entropy_coef` | 0.10 | Entropy bonus coefficient (was 0.05 in Phase 1) |
-| `buffer_size` | 512 | Experience buffer before update |
-| `batch_size` | 64 | Mini-batch size for SGD |
-| `n_epochs` | 10 | PPO epochs per update |
+| Parameter | Value |
+|-----------|-------|
+| `lr_actor` | 1e-4 |
+| `lr_critic` | 3e-4 |
+| `gamma` | 0.99 |
+| `gae_lambda` | 0.95 |
+| `clip_epsilon` | 0.2 |
+| `entropy_coef` | 0.10 |
+| `buffer_size` | 512 |
+| `batch_size` | 64 |
+| `n_epochs` | 10 |
 
-## Network Architecture
+---
 
+## Usage
+
+```bash
+# Training
+python run.py --strategy rl --train --size 50
+
+# Inference (load trained model)
+python run.py --strategy rl --load rl_model --size 100
+
+# Dashboard (separate terminal)
+python dashboard.py --port 5001
+
+# Baselines
+python run.py --strategy momentum
+python run.py --strategy mean_revert
+python run.py --strategy random
 ```
-Actor (Policy Network)
-├── Linear(18 → 128) + Tanh
-├── Linear(128 → 128) + Tanh
-└── Linear(128 → 3) + Softmax
-
-Critic (Value Network)
-├── Linear(18 → 128) + Tanh
-├── Linear(128 → 128) + Tanh
-└── Linear(128 → 1)
-```
-
-## Dashboard Features
-
-- **Live market cards** - Probability, time remaining, velocity
-- **Position tracking** - Current exposure with unrealized P&L
-- **P&L chart** - Rolling performance visualization
-- **RL metrics** - Buffer progress, policy/value loss, entropy, KL divergence
-- **Trade feed** - Recent trade history with outcomes
 
 ## Requirements
 
 ```
-mlx>=0.5.0        # Apple Silicon ML framework
-websockets>=12.0  # Async WebSocket client
-flask>=3.0.0      # Web framework
-flask-socketio>=5.3.0  # Real-time dashboard
-numpy>=1.24.0     # Numerical computing
-requests>=2.31.0  # HTTP client
+mlx>=0.5.0
+websockets>=12.0
+flask>=3.0.0
+flask-socketio>=5.3.0
+numpy>=1.24.0
+requests>=2.31.0
 ```
 
 ## Installation
@@ -182,55 +156,18 @@ source venv/bin/activate
 pip install mlx websockets flask flask-socketio numpy requests
 ```
 
-## Paper Trading
+---
 
-This system is for **paper trading only**. It does not execute real trades on Polymarket. All positions are simulated using live market data.
+## Live Trading Gap
 
-To connect to real trading, you would need:
-1. Polymarket CLOB API credentials
-2. Wallet with USDC on Polygon
-3. Order execution logic (not implemented)
+Paper results won't transfer directly to live. Key differences:
 
-## Performance Notes
+**Latency**: Paper assumes instant fills. Real orders take 50-200ms round-trip. Arb signals decay in <100ms.
 
-- Markets refresh every 15 minutes
-- Decision loop runs at ~2 Hz (500ms tick)
-- PPO updates take ~1-2 seconds on M1/M2
-- Dashboard updates every tick for responsiveness
+**Market impact**: Paper trades don't consume liquidity. Real $100+ orders walk the book and move prices.
 
-## Known Limitations
+**Fees**: Paper ignores maker/taker fees. Real trading pays spread + fees on every round-trip.
 
-- No real order execution
-- Single-threaded decision loop
-- No persistence of training state across restarts (save manually)
-- Markets may have low liquidity during off-hours
+**Adversarial environment**: Other traders see your orders. Patterns get front-run. Alpha decays as strategy becomes known.
 
-## Live Trading Considerations
-
-Paper trading results won't directly translate to live performance due to:
-
-**Latency**
-- Paper trading assumes instant fills at mid-price
-- Real orders face network latency (50-200ms to Polymarket)
-- Fast-moving markets may move against you before fill
-- Cross-exchange arb signals decay quickly - stale by 100ms+
-
-**Orderbook Impact**
-- Paper trades don't consume liquidity
-- Real orders eat into the book, especially at size
-- Thin books during off-hours = significant slippage
-- Large trades ($100+) may need to walk the book
-
-**Execution Quality**
-- No maker/taker fee modeling in paper mode
-- Partial fills not simulated
-- Queue position matters for limit orders
-- Aggressive orders pay the spread
-
-**Market Microstructure**
-- Other traders react to your orders
-- Visible size on book attracts front-running
-- Repeated patterns get arbitraged away
-- Alpha decay as strategy becomes known
-
-For live trading, expect 20-50% performance degradation from paper results depending on position size and market conditions.
+**Realistic expectation**: 20-50% performance degradation from paper to live, depending on size and market conditions.

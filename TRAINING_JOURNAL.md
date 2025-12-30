@@ -1,417 +1,207 @@
-# RL Trading on Polymarket: Training Journal
+# Training Journal: RL on Polymarket
 
-## Overview
-
-Training a reinforcement learning agent to trade 15-minute binary prediction markets on Polymarket. The agent uses PPO (Proximal Policy Optimization) with an actor-critic architecture, implemented in MLX for Apple Silicon.
-
-**Goal**: Learn to predict short-term price movements in crypto prediction markets by observing orderbook dynamics, Binance futures data, and market microstructure.
+This documents training a PPO agent to trade 15-minute binary prediction markets. The experiment ran on December 29, 2025 over ~2 hours of live market data.
 
 ---
 
-## What Makes This Interesting
+## The Experiment
 
-### 1. Concurrent Multi-Asset Trading
+**Goal**: Can an RL agent learn to predict short-term crypto price direction by observing cross-exchange data?
 
-Unlike typical RL trading systems that focus on a single asset, this agent trades **4 markets simultaneously** (BTC, ETH, SOL, XRP). Each 15-minute window spawns 4 independent binary markets, and the agent must:
-- Allocate attention across all active markets
-- Learn asset-specific patterns while sharing a single policy
-- Handle asynchronous market expirations and refreshes
+**Setup**:
+- 4 concurrent markets (BTC, ETH, SOL, XRP)
+- 15-minute binary outcomes (UP or DOWN)
+- Live data from Binance + Polymarket
+- Paper trading with $10 base capital
 
-The same neural network makes decisions for all assets - learning generalizable crypto trading patterns rather than overfitting to one market.
-
-### 2. Unique Market Structure
-
-Polymarket's 15-minute binary markets are unusual:
-- **Binary outcome**: Market resolves to $1.00 or $0.00 based on price direction
-- **Known resolution time**: Exact 15-minute windows, not continuous trading
-- **Orderbook-based**: Real CLOB with bid/ask spreads, not AMM
-- **Cross-exchange arbitrage**: Polymarket prices should track Binance, but don't always
-
-This creates exploitable inefficiencies - the agent can observe Binance price movements and bet on Polymarket before the orderbook fully adjusts.
-
-### 3. Multi-Source Real-Time Data Fusion
-
-The agent fuses data from multiple WebSocket streams in real-time:
-```
-Binance Spot WSS     → Price, returns, momentum
-Binance Futures WSS  → Funding rates, CVD, liquidations
-Polymarket CLOB WSS  → Orderbook depth, bid/ask spreads
-```
-
-This creates an 18-dimensional state space that captures both the underlying asset dynamics AND the prediction market microstructure.
-
-### 4. Sparse Reward Challenge
-
-Unlike continuous markets where PnL accrues gradually, binary markets only pay out at resolution:
-- Entry at prob=0.55, exit at resolution
-- Either +$0.45 profit (if correct) or -$0.55 loss (if wrong)
-- No intermediate reward signal during the 15-minute window
-
-This makes credit assignment harder - the agent must learn which early signals predict final outcomes.
-
-### 5. MLX on Apple Silicon
-
-Training runs on-device using Apple's MLX framework, enabling:
-- GPU-accelerated PPO updates on M1/M2/M3
-- No cloud GPU costs for experimentation
-- Real-time training during live market hours
+**Result**: 109% ROI over 72 PPO updates, but with important caveats about what this proves.
 
 ---
 
-## The Setup
+## Why This Market?
 
-### Market Structure
-- **Asset**: 15-minute binary markets on BTC, ETH, SOL, XRP
-- **Question**: "Will [ASSET] price go UP or DOWN in the next 15 minutes?"
-- **Tokens**: UP token (probability 0-1) and DOWN token (1 - UP probability)
-- **Resolution**: Based on Binance spot price at market close
+Polymarket's 15-minute crypto markets have interesting properties:
 
-### State Space (18 features)
-```
-Momentum (3):
-- returns_1m, returns_5m, returns_10m: Ultra-short price momentum
+1. **Binary resolution** - Market pays $1 or $0 based on whether price went up. No partial outcomes.
 
-Order Flow (4):
-- ob_imbalance_l1, ob_imbalance_l5: Orderbook imbalance at levels 1 & 5
-- trade_flow_imbalance: Buy vs sell pressure
-- cvd_acceleration: Cumulative volume delta acceleration
+2. **Known end time** - Unlike continuous trading, you know exactly when resolution happens. Changes the decision problem.
 
-Microstructure (3):
-- spread_pct: Bid-ask spread as % of prob
-- trade_intensity: Recent trade frequency
-- large_trade_flag: Large trade detected
+3. **Cross-exchange lag** - Polymarket orderbook lags Binance by seconds. If you see Binance move, you can sometimes bet on Polymarket before the book adjusts.
 
-Volatility (2):
-- vol_5m: 5-minute realized volatility
-- vol_expansion: Current vol vs recent average
+4. **Sparse reward** - You only learn if you were right at resolution. No intermediate feedback during the 15-minute window.
 
-Position (4):
-- has_position, position_side, position_pnl, time_remaining
-
-Regime (2):
-- vol_regime, trend_regime: Market environment context
-```
-
-### Action Space (Current - Phase 2)
-- **HOLD (0)**: No action
-- **BUY (1)**: Buy UP token (betting price goes up)
-- **SELL (2)**: Sell UP token / buy DOWN (betting price goes down)
-- Fixed 50% position sizing ($5 on $10 base)
-
-*Phase 1 used 7 actions with variable sizing (25/50/100%) - see Changes Made section.*
-
-### Architecture
-```
-Actor:  Linear(18, 128) -> tanh -> Linear(128, 128) -> tanh -> Linear(128, 3) -> softmax
-Critic: Linear(18, 128) -> tanh -> Linear(128, 128) -> tanh -> Linear(128, 1)
-```
+This creates a clean RL problem: observe state, take action, wait for binary outcome.
 
 ---
 
-## Training Status
+## Data Fusion
 
-**Date**: December 29, 2025, 19:08 - 20:54
-**Total Updates**: 72 (36 + 36)
-**Total Trades**: 4,875 (1,545 + 3,330)
-**Capital**: $10 base, 50% position sizing ($5/trade)
-**Current PnL**: $10.93 (109% ROI)
+The agent combines three data streams:
+
+```
+Binance Spot WSS     → Price returns (1m, 5m, 10m)
+Binance Futures WSS  → Order flow, CVD, large trades
+Polymarket CLOB WSS  → Bid/ask spread, orderbook imbalance
+```
+
+This creates an 18-dimensional state:
+
+| Category | Features |
+|----------|----------|
+| Momentum | 1m/5m/10m returns |
+| Order flow | L1/L5 imbalance, trade flow, CVD acceleration |
+| Microstructure | Spread %, trade intensity, large trade flag |
+| Volatility | 5m vol, vol expansion ratio |
+| Position | Has position, side, PnL, time remaining |
+| Regime | Vol regime, trend regime |
+
+The hypothesis: combining underlying asset dynamics (Binance) with prediction market microstructure (Polymarket) gives exploitable signal.
 
 ---
 
-### Phase 1: Shaped Rewards (Updates 1-36)
+## Training: Two Phases
 
+### Phase 1: Shaped Rewards (Failed)
+
+**Updates**: 1-36
 **Duration**: ~52 minutes
 **Trades**: 1,545
 
-### Configuration
-```python
-buffer_size = 512      # Experiences before update
-batch_size = 64
-n_epochs = 10
-lr_actor = 1e-4
-lr_critic = 3e-4
-gamma = 0.99
-gae_lambda = 0.95
-clip_epsilon = 0.2
-entropy_coef = 0.05    # Low - contributed to collapse
-```
-
-### Reward Function (Original)
-```python
-def _compute_step_reward(self, state, action, pos):
-    reward = 0.0
-
-    # PnL delta (scaled down)
-    pnl_delta = current_pnl - previous_pnl
-    reward += pnl_delta * 0.1
-
-    # Transaction cost penalty
-    if action != HOLD:
-        reward -= 0.001
-
-    # Momentum alignment bonus
-    if action.is_buy and state.prob_velocity > 0:
-        reward += 0.002
-
-    # Position sizing bonus
-    reward += 0.001 * action.size_multiplier
-
-    return reward
-```
-
-### Results Summary
-
-| Metric | Start | End | Notes |
-|--------|-------|-----|-------|
-| Entropy | 1.09 | 0.36 | Collapsed - premature convergence |
-| PnL | $0.00 | $3.90 | Positive but volatile |
-| Win Rate | 0% | 20.2% | Below random (33%) |
-| Buffer Win Rate | 40% | 76% | Diverged from reality |
-
-### Training Progression (Selected Updates)
-
-| Update | Entropy | Value Loss | PnL | Trades | Win Rate |
-|--------|---------|------------|-----|--------|----------|
-| 1 | 1.09 | 3.29 | $3.25 | 126 | 19.8% |
-| 10 | 0.79 | 6.78 | $4.40 | 881 | 17.3% |
-| 20 | 0.40 | 3.60 | $1.37 | 1215 | 19.4% |
-| 30 | 0.47 | 1.80 | $2.95 | 1443 | 19.2% |
-| 36 | 0.36 | 1.83 | $3.90 | 1545 | 20.2% |
-
-### Key Observations
-
-**1. Entropy Collapse**
-```
-Update 1:  entropy=1.09  (good exploration)
-Update 10: entropy=0.79
-Update 20: entropy=0.40
-Update 36: entropy=0.36  (nearly deterministic)
-```
-The policy converged too quickly. With `entropy_coef=0.05`, the entropy bonus wasn't strong enough to maintain exploration.
-
-**2. Reward Signal Misalignment**
-
-The buffer win rate (90%+) measured how often `reward > 0`, not actual profitable trades. The shaping rewards dominated:
-- Transaction cost: -0.001 per trade
-- Momentum bonus: +0.002 when aligned
-- Size bonus: +0.001
-
-These micro-bonuses drowned out the actual PnL signal (scaled by 0.1). The agent learned to satisfy shaping rewards, not maximize profit.
-
-**3. Value Loss Spikes**
-```
-Update 5:  value_loss=38.17  (spike)
-Update 14: value_loss=20.93  (spike)
-Update 26: value_loss=42.64  (spike)
-```
-The critic struggled to predict returns, indicating the reward signal was noisy/inconsistent.
-
----
-
-## Diagnosis
-
-### Problem: Reward Shaping Dominated PnL
-
-The original reward function had multiple components:
-1. **PnL delta × 0.1** - The actual signal we care about
-2. **Transaction cost** - Constant penalty
-3. **Momentum bonus** - Correlation bonus
-4. **Sizing bonus** - Encourages larger positions
-
-With typical PnL deltas of $0.01-0.05, the scaled signal was 0.001-0.005. The shaping rewards were of similar magnitude, creating a noisy signal where the agent could achieve positive rewards without profitable trading.
-
-### Buffer Win Rate vs Cumulative Win Rate
-
-- **Buffer Win Rate**: % of experiences with reward > 0 (includes shaping bonuses)
-- **Cumulative Win Rate**: % of closed trades that were profitable
-
-The divergence (91% vs 20%) revealed the agent was optimizing for shaping rewards, not actual profits.
-
----
-
-## Changes Made
-
-### 1. Simplified Reward Function
-
-**Before**: Step-by-step PnL delta + shaping rewards
-**After**: Pure realized PnL on position close
+Started with a reward function that included shaping bonuses:
 
 ```python
-def _compute_step_reward(self, cid, state, action, pos):
-    """Compute reward signal for RL training - pure realized PnL."""
-    # Only reward on position close - cleaner signal
-    return self.pending_rewards.pop(cid, 0.0)
-
-# In position close logic:
-pnl = (exit_price - entry_price) * size  # or inverse for DOWN
-self.pending_rewards[cid] = pnl  # Pure realized PnL
+reward = pnl_delta * 0.1           # Actual PnL (scaled down)
+reward -= 0.001                    # Transaction cost
+reward += 0.002 * momentum_aligned # Bonus for trading with momentum
+reward += 0.001 * size_multiplier  # Bonus for larger positions
 ```
 
-**Rationale**:
-- No more micro-bonuses that can be gamed
-- Sparse but meaningful signal
-- Directly aligned with what we want to optimize
+**What happened**: Entropy collapsed from 1.09 to 0.36. The policy became nearly deterministic, fixating on a single action.
 
-### 2. Increased Entropy Coefficient
+**Why it failed**: The shaping rewards were similar magnitude to the actual PnL signal. The agent learned to collect bonuses (trade with momentum, use large sizes) without actually being profitable. Buffer win rate showed 90%+ but actual trade win rate was 20%.
 
-**Before**: `entropy_coef = 0.05`
-**After**: `entropy_coef = 0.10`
+**Lesson**: Shaping rewards can backfire when they're gameable. The agent optimized the reward function, not the underlying goal.
 
-**Rationale**: Prevent premature convergence, maintain exploration longer.
+| Update | Entropy | PnL | Win Rate |
+|--------|---------|-----|----------|
+| 1 | 1.09 | $3.25 | 19.8% |
+| 10 | 0.79 | $4.40 | 17.3% |
+| 20 | 0.40 | $1.37 | 19.4% |
+| 36 | 0.36 | $3.90 | 20.2% |
 
-### 3. Simplified Action Space
+### Phase 2: Pure PnL (Worked)
 
-**Before**: 7 actions with variable sizing
-```
-HOLD, BUY_SMALL (25%), BUY_MEDIUM (50%), BUY_LARGE (100%)
-SELL_SMALL (25%), SELL_MEDIUM (50%), SELL_LARGE (100%)
-```
-
-**After**: 3 actions with fixed sizing
-```
-HOLD (0), BUY (1), SELL (2) - all at 50% position size
-```
-
-**Rationale**: Reduce complexity. Let the model learn when to trade before learning how much.
-
-### 4. Reset Reward Normalization
-
-```python
-# Reset stats while keeping weights
-np.savez("rl_model_stats.npz",
-    reward_mean=0.0,
-    reward_std=1.0,
-    reward_count=0
-)
-```
-
-**Rationale**: Old stats were calibrated to shaped rewards (mean=-0.002, std=0.01). New pure-PnL rewards have different distribution.
-
----
-
-### Phase 2: Pure PnL Reward (Updates 37-72)
-
-**Duration**: December 29, 2025, 20:02 - 20:54 (~52 minutes)
+**Updates**: 37-72
+**Duration**: ~52 minutes
 **Trades**: 3,330
 
-**Capital Context**: $10 base capital, 50% position sizing ($5/trade).
+Switched to pure realized PnL:
 
-#### Configuration Changes
 ```python
-entropy_coef = 0.10  # Doubled
-# Reward: pure realized PnL (no shaping)
+def reward(position_close):
+    return (exit_price - entry_price) * size  # That's it
 ```
 
-#### Results (36 updates)
+Also doubled entropy coefficient (0.05 → 0.10) to prevent collapse.
 
-| Update | Entropy | Value Loss | Avg Reward | PnL | Trades | Win Rate |
-|--------|---------|------------|------------|-----|--------|----------|
-| 1 | 0.68 | 149.5 | +0.40 | $5.20 | 27 | 33.3% |
-| 5 | 0.93 | 2.09 | +0.02 | $5.65 | 226 | 20.8% |
-| 10 | 1.06 | 7.16 | +0.02 | $9.55 | 616 | 22.9% |
-| 15 | 1.07 | 14.21 | -0.07 | $8.80 | 1,129 | 21.0% |
-| 20 | 1.05 | 3.10 | -0.01 | $5.85 | 1,672 | 21.1% |
-| 25 | 1.04 | 3.75 | +0.03 | $9.48 | 2,245 | 21.2% |
-| 30 | 1.07 | 0.49 | +0.00 | $7.18 | 2,751 | 20.9% |
-| 36 | 1.05 | 6.47 | +0.05 | $10.93 | 3,330 | 21.2% |
+**What happened**: Entropy recovered to 1.05 (near maximum for 3 actions). PnL grew steadily to $10.93, representing 109% ROI on the $10 base.
 
-**Final ROI**: $10.93 PnL on $10 base = **109% return** on capital.
+| Update | Entropy | PnL | Win Rate |
+|--------|---------|-----|----------|
+| 1 | 0.68 | $5.20 | 33.3% |
+| 10 | 1.06 | $9.55 | 22.9% |
+| 20 | 1.05 | $5.85 | 21.1% |
+| 36 | 1.05 | $10.93 | 21.2% |
 
-#### Observations
-
-**1. Entropy Fully Recovered**
-```
-Phase 1 end:   entropy=0.36 (collapsed)
-Phase 2 start: entropy=0.68 (loaded weights)
-Phase 2 end:   entropy=1.05 (full exploration)
-```
-The higher entropy coefficient worked - entropy recovered from 0.36 to 1.05, near the theoretical maximum (~1.1 for 3 actions). The policy maintained proper stochasticity throughout Phase 2.
-
-**2. Value Loss Spikes**
-
-Multiple value loss spikes observed:
-- Update 1: 149.5 (reward scale change)
-- Update 7: 69.95 (large reward variance)
-- Updates 8-9: 18-20 (gradual stabilization)
-- Update 10: 7.16 (settling down)
-
-The critic is adapting to the pure PnL reward signal which has higher variance than shaped rewards.
-
-**3. Consistent Positive PnL**
-
-Cumulative PnL grew steadily through Phase 2, ending at $10.93 on $10 base capital (109% ROI). Buffer rewards consistently positive, indicating the model found profitable trades on average with the pure PnL signal.
-
-**4. Win Rate Plateau**
-
-Win rate stable around 21-24%, which is below random (33%) but the model is profitable due to asymmetric payoffs - winners pay more than losers cost.
+**Observation**: Win rate settled at ~21%, below random (33%). But the agent is profitable because binary markets have asymmetric payoffs. When you buy at prob=0.40, a win pays $0.60 and a loss costs $0.40.
 
 ---
 
-## Technical Details
+## What Changed
 
-### PPO Implementation
+| Aspect | Phase 1 | Phase 2 |
+|--------|---------|---------|
+| Reward | PnL delta + shaping bonuses | Pure realized PnL |
+| Entropy coef | 0.05 | 0.10 |
+| Actions | 7 (variable sizing) | 3 (fixed 50%) |
+| Final entropy | 0.36 (collapsed) | 1.05 (healthy) |
+| Final PnL | $3.90 | $10.93 |
 
-Using MLX for Apple Silicon optimization:
+Key changes:
 
-```python
-def update(self):
-    # Compute GAE advantages
-    advantages = self._compute_gae(rewards, values, dones)
-    returns = advantages + values
+1. **Removed shaping rewards** - No more momentum bonuses or sizing bonuses. Just pay the agent when it makes money.
 
-    # Normalize advantages
-    advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+2. **Doubled entropy coefficient** - Stronger incentive to explore. Prevented the policy from collapsing to a single action.
 
-    for epoch in range(n_epochs):
-        for batch in batches:
-            # Policy loss with clipping
-            ratio = new_probs / old_probs
-            surr1 = ratio * advantages
-            surr2 = clip(ratio, 1-epsilon, 1+epsilon) * advantages
-            policy_loss = -min(surr1, surr2).mean()
-
-            # Value loss
-            value_loss = MSE(values, returns)
-
-            # Entropy bonus
-            entropy = -(probs * log(probs)).sum(-1).mean()
-
-            # Total loss
-            loss = policy_loss + value_coef * value_loss - entropy_coef * entropy
-```
-
-### Reward Normalization
-
-Running mean/std normalization to stabilize training:
-
-```python
-def normalize_reward(self, reward):
-    self.reward_count += 1
-    delta = reward - self.reward_mean
-    self.reward_mean += delta / self.reward_count
-    self.reward_std = sqrt(running_variance / count)
-    return (reward - self.reward_mean) / (self.reward_std + 1e-8)
-```
+3. **Simplified action space** - Reduced from 7 actions (HOLD + 3 buy sizes + 3 sell sizes) to 3 actions (HOLD, BUY, SELL). Let the model learn when to trade before learning how much.
 
 ---
 
-## Conclusions
+## Technical Implementation
 
-This experiment demonstrated:
+### PPO with MLX
 
-1. **Reward shaping can backfire** - The agent learned to game shaping rewards instead of maximizing PnL. Pure realized PnL worked better despite being sparse.
+```python
+# GAE advantage estimation
+advantages = compute_gae(rewards, values, dones, gamma=0.99, lambda_=0.95)
+returns = advantages + values
 
-2. **Entropy coefficient matters** - 0.05 led to policy collapse; 0.10 maintained healthy exploration throughout training.
+# Normalize advantages
+advantages = (advantages - mean) / (std + 1e-8)
 
-3. **Win rate isn't everything** - 21% win rate sounds bad, but asymmetric payoffs (binary markets) made it profitable. Winners paid more than losers cost.
+# Clipped policy loss
+ratio = new_prob / old_prob
+surr1 = ratio * advantage
+surr2 = clip(ratio, 1-0.2, 1+0.2) * advantage
+policy_loss = -min(surr1, surr2).mean()
 
-4. **Action space simplification helped** - Reducing from 7 to 3 actions let the model focus on timing rather than sizing.
+# Value loss + entropy bonus
+value_loss = MSE(values, returns)
+entropy = -(probs * log(probs)).sum(-1).mean()
+loss = policy_loss + 0.5 * value_loss - 0.10 * entropy
+```
 
-**Final result**: 109% ROI on base capital over 72 updates (~1.75 hours of live market training).
+### Hyperparameters
+
+| Parameter | Value |
+|-----------|-------|
+| Buffer size | 512 experiences |
+| Batch size | 64 |
+| Epochs per update | 10 |
+| Actor LR | 1e-4 |
+| Critic LR | 3e-4 |
+| Gamma | 0.99 |
+| GAE lambda | 0.95 |
+| Clip epsilon | 0.2 |
+| Entropy coef | 0.10 |
 
 ---
 
-## Appendix: File Structure
+## What This Proves
+
+1. **RL can learn from sparse binary rewards** - The agent improved despite only getting feedback every 15 minutes at market resolution.
+
+2. **Pure PnL > shaped rewards** - Shaping was gameable. Sparse but honest signal worked better.
+
+3. **Entropy coefficient matters** - 0.05 caused collapse; 0.10 maintained exploration.
+
+4. **Low win rate can be profitable** - 21% wins, 109% ROI. Asymmetric payoffs change the math.
+
+5. **Multi-source fusion provides signal** - Combining Binance and Polymarket data gave the agent something to learn from.
+
+## What This Doesn't Prove
+
+1. **Live edge** - Paper trading ignores latency, slippage, fees, and market impact. Real performance would be worse.
+
+2. **Statistical significance** - 2 hours isn't enough. Could be variance. Need weeks of out-of-sample testing.
+
+3. **Scalability** - $5 positions are invisible. At size, the agent's orders would move the market.
+
+4. **Durability** - If this edge exists, it will get arbitraged away as others exploit it.
+
+---
+
+## Files
 
 ```
 experiments/03_polymarket/
@@ -421,17 +211,16 @@ experiments/03_polymarket/
 │   ├── base.py           # Action/State definitions
 │   └── rl_mlx.py         # PPO implementation
 ├── helpers/
-│   ├── polymarket.py     # Market data fetching
+│   ├── polymarket_api.py # Market data
 │   ├── binance_wss.py    # Price streaming
-│   ├── orderbook_wss.py  # Orderbook streaming
-│   └── training_logger.py # CSV logging
+│   └── orderbook_wss.py  # Orderbook streaming
 ├── logs/
-│   ├── trades_*.csv      # All executed trades
-│   └── updates_*.csv     # PPO update metrics
+│   ├── trades_*.csv      # Trade history
+│   └── updates_*.csv     # PPO metrics
 ├── rl_model.safetensors  # Model weights
-└── rl_model_stats.npz    # Reward normalization stats
+└── rl_model_stats.npz    # Reward normalization
 ```
 
 ---
 
-*Last updated: December 29, 2025*
+*December 29, 2025*
