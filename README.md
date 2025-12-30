@@ -2,6 +2,8 @@
 
 An experiment in training reinforcement learning agents to trade prediction markets using real-time multi-source data fusion.
 
+**[View the presentation (PDF)](RL_Trading_Agents_Fusion_Breakthrough.pdf)**
+
 ## What This Is
 
 A PPO (Proximal Policy Optimization) agent that paper trades Polymarket's 15-minute binary crypto markets. The agent observes live data from Binance futures and Polymarket's orderbook, then learns to predict short-term price direction.
