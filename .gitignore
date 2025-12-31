@@ -25,6 +25,10 @@ venv/
 ENV/
 .DS_Store
 
-# Keep trade logs locally but don't push (large files)
+# Keep logs locally but don't push (large files)
 logs/trades_*.csv
 logs/episodes_*.csv
+logs/updates_*.csv
+
+# Analysis outputs
+latest_analysis.png
