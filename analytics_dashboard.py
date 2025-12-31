@@ -261,6 +261,30 @@ HTML_TEMPLATE = """
                     <div class="chart-title">Rolling Win Rate (50 trades)</div>
                     <div id="rollingWinChart"></div>
                 </div>
+                <div class="chart-container full-width">
+                    <div class="chart-title">Rolling Avg PnL/Trade (50 trades)</div>
+                    <div id="rollingPnlChart"></div>
+                </div>
+                <div class="chart-container full-width">
+                    <div class="chart-title">Rolling Sharpe Ratio (50 trades)</div>
+                    <div id="rollingSharpeChart"></div>
+                </div>
+                <div class="chart-container full-width">
+                    <div class="chart-title">Rolling Profit Factor (50 trades)</div>
+                    <div id="rollingProfitFactorChart"></div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Performance by Session Phase</div>
+                    <div id="sessionPhaseChart"></div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Win Rate by Session Phase</div>
+                    <div id="sessionWinRateChart"></div>
+                </div>
+                <div class="chart-container full-width">
+                    <div class="chart-title">Cumulative Win Rate Evolution</div>
+                    <div id="cumulativeWinRateChart"></div>
+                </div>
             `;
 
             // Equity curve
@@ -343,6 +367,74 @@ HTML_TEMPLATE = """
                 line: { color: '#666', width: 1, dash: 'dash' }
             }], {...darkLayout, height: 200, showlegend: false});
 
+            // Rolling avg PnL
+            Plotly.newPlot('rollingPnlChart', [{
+                y: data.rolling_avg_pnl,
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#22c55e', width: 1.5 }
+            }, {
+                y: Array(data.rolling_avg_pnl.length).fill(0),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#666', width: 1, dash: 'dash' }
+            }], {...darkLayout, height: 200, showlegend: false});
+
+            // Rolling Sharpe
+            Plotly.newPlot('rollingSharpeChart', [{
+                y: data.rolling_sharpe,
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#8b5cf6', width: 1.5 }
+            }, {
+                y: Array(data.rolling_sharpe.length).fill(0),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#666', width: 1, dash: 'dash' }
+            }], {...darkLayout, height: 200, showlegend: false});
+
+            // Rolling Profit Factor
+            Plotly.newPlot('rollingProfitFactorChart', [{
+                y: data.rolling_profit_factor,
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#ec4899', width: 1.5 }
+            }, {
+                y: Array(data.rolling_profit_factor.length).fill(1),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#666', width: 1, dash: 'dash' }
+            }], {...darkLayout, height: 200, showlegend: false});
+
+            // Session phase PnL
+            Plotly.newPlot('sessionPhaseChart', [{
+                x: data.by_session_phase.phases,
+                y: data.by_session_phase.avg_pnl,
+                type: 'bar',
+                marker: { color: data.by_session_phase.avg_pnl.map(v => v >= 0 ? '#22c55e' : '#ef4444') }
+            }], {...darkLayout, height: 220});
+
+            // Session phase win rate
+            Plotly.newPlot('sessionWinRateChart', [{
+                x: data.by_session_phase.phases,
+                y: data.by_session_phase.win_rates,
+                type: 'bar',
+                marker: { color: '#3b82f6' }
+            }], {...darkLayout, height: 220, yaxis: {...darkLayout.yaxis, range: [0, 100]}});
+
+            // Cumulative win rate
+            Plotly.newPlot('cumulativeWinRateChart', [{
+                y: data.cumulative_win_rate,
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#06b6d4', width: 1.5 }
+            }, {
+                y: Array(data.cumulative_win_rate.length).fill(50),
+                type: 'scatter',
+                mode: 'lines',
+                line: { color: '#666', width: 1, dash: 'dash' }
+            }], {...darkLayout, height: 200, showlegend: false});
+
             // Insights
             let insightsHtml = '<div class="section-title">🔍 Key Insights</div>';
             data.insights.forEach(i => {
@@ -418,6 +510,25 @@ HTML_TEMPLATE = """
                         <tr><td>Avg Winning Streak</td><td>${data.avg_win_streak.toFixed(1)} trades</td></tr>
                         <tr><td>Avg Losing Streak</td><td>${data.avg_loss_streak.toFixed(1)} trades</td></tr>
                         <tr><td>Current Streak</td><td>${data.current_streak > 0 ? '+' : ''}${data.current_streak} (${data.current_streak > 0 ? 'winning' : 'losing'})</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="section-title" style="margin-top: 25px;">🕐 Session Phase Analysis</div>
+                <p style="color: #666; margin-bottom: 10px; font-size: 12px;">How performance changes as the session progresses (Start→End)</p>
+                <table>
+                    <thead>
+                        <tr><th>Phase</th><th>Trades</th><th>Win Rate</th><th>Total PnL</th><th>Avg PnL</th></tr>
+                    </thead>
+                    <tbody>
+                        ${data.by_session_phase.phases.map((phase, i) => `
+                            <tr>
+                                <td><strong>${phase}</strong></td>
+                                <td>${data.by_session_phase.trades[i]}</td>
+                                <td>${data.by_session_phase.win_rates[i].toFixed(1)}%</td>
+                                <td style="color: ${data.by_session_phase.total_pnl[i] >= 0 ? '#22c55e' : '#ef4444'}">$${data.by_session_phase.total_pnl[i].toFixed(2)}</td>
+                                <td>$${data.by_session_phase.avg_pnl[i].toFixed(2)}</td>
+                            </tr>
+                        `).join('')}
                     </tbody>
                 </table>
             `;
@@ -535,6 +646,42 @@ def analyze_trades(filepath):
     rolling_win = (df['pnl'] > 0).rolling(50).mean() * 100
     rolling_win = rolling_win.dropna().tolist()
 
+    # Rolling avg PnL per trade
+    rolling_avg_pnl = df['pnl'].rolling(50).mean()
+    rolling_avg_pnl = rolling_avg_pnl.dropna().tolist()
+
+    # Rolling Sharpe ratio (simplified - mean/std over window)
+    def rolling_sharpe_calc(window):
+        mean = window.mean()
+        std = window.std()
+        return mean / std if std > 0 else 0
+    rolling_sharpe = df['pnl'].rolling(50).apply(rolling_sharpe_calc, raw=False)
+    rolling_sharpe = rolling_sharpe.dropna().tolist()
+
+    # Rolling profit factor
+    def rolling_pf_calc(window):
+        wins = window[window > 0].sum()
+        losses = abs(window[window <= 0].sum())
+        return min(wins / losses, 10) if losses > 0 else 10  # Cap at 10 for display
+    rolling_pf = df['pnl'].rolling(50).apply(rolling_pf_calc, raw=False)
+    rolling_pf = rolling_pf.dropna().tolist()
+
+    # Cumulative win rate over time
+    cumulative_wins = (df['pnl'] > 0).cumsum()
+    cumulative_count = np.arange(1, len(df) + 1)
+    cumulative_win_rate = (cumulative_wins / cumulative_count * 100).tolist()
+
+    # Performance by session phase (split session into 5 equal parts)
+    df['trade_idx'] = np.arange(len(df))
+    df['session_phase'] = pd.cut(df['trade_idx'], bins=5, labels=['Start', 'Early', 'Mid', 'Late', 'End'])
+    by_session = df.groupby('session_phase', observed=True).agg({
+        'pnl': ['sum', 'mean', 'count']
+    }).reset_index()
+    by_session.columns = ['phase', 'total_pnl', 'avg_pnl', 'trades']
+    by_session['win_rate'] = df.groupby('session_phase', observed=True).apply(
+        lambda x: (x['pnl'] > 0).mean() * 100, include_groups=False
+    ).values
+
     # Streak analysis
     streaks = []
     current = 0
@@ -596,6 +743,30 @@ def analyze_trades(filepath):
     if max_loss_streak > 15:
         insights.append({'icon': '🔴', 'text': f"Max losing streak of {max_loss_streak} trades - check risk management"})
 
+    # Evolution insights
+    if len(cumulative_win_rate) > 100:
+        early_wr = np.mean(cumulative_win_rate[:100])
+        late_wr = np.mean(cumulative_win_rate[-100:])
+        if late_wr > early_wr + 2:
+            insights.append({'icon': '📈', 'text': f"Win rate improving: {early_wr:.1f}% early → {late_wr:.1f}% late (+{late_wr - early_wr:.1f}%)"})
+        elif early_wr > late_wr + 2:
+            insights.append({'icon': '📉', 'text': f"Win rate declining: {early_wr:.1f}% early → {late_wr:.1f}% late ({late_wr - early_wr:.1f}%)"})
+
+    if len(rolling_avg_pnl) > 100:
+        early_pnl = np.mean(rolling_avg_pnl[:50])
+        late_pnl = np.mean(rolling_avg_pnl[-50:])
+        if late_pnl > early_pnl + 1:
+            insights.append({'icon': '🚀', 'text': f"PnL/trade improving: ${early_pnl:.2f} early → ${late_pnl:.2f} late"})
+        elif early_pnl > late_pnl + 1:
+            insights.append({'icon': '⚡', 'text': f"PnL/trade declining: ${early_pnl:.2f} early → ${late_pnl:.2f} late"})
+
+    # Session phase insight
+    if len(by_session) > 0:
+        best_phase = by_session.loc[by_session['avg_pnl'].idxmax()]
+        worst_phase = by_session.loc[by_session['avg_pnl'].idxmin()]
+        if best_phase['avg_pnl'] > 0 and worst_phase['avg_pnl'] < 0:
+            insights.append({'icon': '🎯', 'text': f"Best session phase: {best_phase['phase']} (${best_phase['avg_pnl']:.2f} avg), Worst: {worst_phase['phase']} (${worst_phase['avg_pnl']:.2f} avg)"})
+
     return {
         'total_pnl': total_pnl,
         'total_trades': total_trades,
@@ -645,6 +816,17 @@ def analyze_trades(filepath):
             'counts': pnl_hist.tolist()
         },
         'rolling_win_rate': rolling_win,
+        'rolling_avg_pnl': rolling_avg_pnl,
+        'rolling_sharpe': rolling_sharpe,
+        'rolling_profit_factor': rolling_pf,
+        'cumulative_win_rate': cumulative_win_rate,
+        'by_session_phase': {
+            'phases': by_session['phase'].astype(str).tolist(),
+            'avg_pnl': by_session['avg_pnl'].tolist(),
+            'total_pnl': by_session['total_pnl'].tolist(),
+            'win_rates': by_session['win_rate'].tolist(),
+            'trades': by_session['trades'].tolist(),
+        },
         'max_win_streak': max_win_streak,
         'max_loss_streak': max_loss_streak,
         'avg_win_streak': avg_win_streak,
