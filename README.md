@@ -54,6 +54,7 @@ See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed training analysis.
 | 2 (Prob-based) | $5 | 36 | 3,330 | $10.93 ($11*) | 21.2% | 1.05 (healthy) | 55% (57%*) |
 | 3 (Scaled up) | $50 | 36 | 4,133 | $23.10 ($76*) | 15.6% | 0.97 (healthy) | 12% (38%*) |
 | 4 (Share-based) | $500 | 46 | 4,873 | $3,392 | 19.0% | 1.08 (healthy) | 170% |
+| 5 (Temporal arch) | $50 | 38 | 973 | $3,289 | 22.8% | 1.05 (healthy) | 164% |
 
 **Capital**: Position size × 4 markets = max exposure ($20 Phase 2, $200 Phase 3, $2000 Phase 4)
 
@@ -133,26 +134,35 @@ New (Phase 4):    pnl = (exit - entry) × shares = (exit - entry) × (dollars / 
 
 Fixed 50% position sizing. Originally had 7 actions with variable sizing (25/50/100%), simplified to reduce complexity.
 
-## Network
+## Network (Phase 5: Temporal Architecture)
 
 ```
-Actor:  18 → 128 (tanh) → 128 (tanh) → 3 (softmax)
-Critic: 18 → 128 (tanh) → 128 (tanh) → 1
+TemporalEncoder: (history_len × 18) → 64 → LayerNorm → tanh → 32
+
+Actor:  [current_state(18) + temporal_features(32)] = 50 → 64 → LN → tanh → 64 → LN → tanh → 3 (softmax)
+Critic: [current_state(18) + temporal_features(32)] = 50 → 96 → LN → tanh → 96 → LN → tanh → 1
 ```
 
-## PPO Hyperparameters
+**Key changes from Phase 4**:
+- **Temporal processing**: TemporalEncoder compresses last 5 states into momentum/trend features
+- **Asymmetric architecture**: Larger critic (96 units) vs actor (64 units) for better value estimation
+- **Feature normalization**: All 18 input features clamped to [-1, 1] range
 
-| Parameter | Value |
-|-----------|-------|
-| `lr_actor` | 1e-4 |
-| `lr_critic` | 3e-4 |
-| `gamma` | 0.99 |
-| `gae_lambda` | 0.95 |
-| `clip_epsilon` | 0.2 |
-| `entropy_coef` | 0.10 |
-| `buffer_size` | 512 |
-| `batch_size` | 64 |
-| `n_epochs` | 10 |
+## PPO Hyperparameters (Phase 5)
+
+| Parameter | Value | Change from Phase 4 |
+|-----------|-------|---------------------|
+| `lr_actor` | 1e-4 | - |
+| `lr_critic` | 3e-4 | - |
+| `gamma` | 0.95 | ↓ from 0.99 (shorter horizon) |
+| `gae_lambda` | 0.95 | - |
+| `clip_epsilon` | 0.2 | - |
+| `entropy_coef` | 0.03 | ↓ from 0.10 (allow sparse policy) |
+| `buffer_size` | 256 | ↓ from 512 (faster adaptation) |
+| `batch_size` | 64 | - |
+| `n_epochs` | 10 | - |
+| `history_len` | 5 | NEW |
+| `temporal_dim` | 32 | NEW |
 
 ---
 

@@ -307,6 +307,28 @@ pnl = (exit_price - entry_price) * shares
 
 ---
 
+### Phase 5: Temporal Architecture
+
+**Changes made**:
+1. Added TemporalEncoder to process last 5 states into 32-dim momentum/trend features
+2. Asymmetric actor-critic: Actor (64 hidden) vs Critic (96 hidden)
+3. Feature normalization: All 18 input features clamped to [-1, 1]
+4. Reduced gamma (0.99 → 0.95) and entropy coef (0.10 → 0.03)
+5. Smaller buffer (512 → 256) for faster adaptation
+6. Fixed market discovery bugs: persistent retry loop, fresh aiohttp sessions
+
+**Trades**: 973 | **Size**: $50
+
+**Final**: $3,289 PnL on $200 max exposure = **164% ROI** | **Win Rate**: 22.8%
+
+**By asset performance**:
+- XRP: +$3,126 (carried the session)
+- SOL: +$757
+- BTC: +$509
+- ETH: -$1,102 (struggled)
+
+---
+
 ## Takeaways
 
 1. **Reward shaping is risky** - When shaping rewards are gameable and similar magnitude to the real signal, agents optimize the wrong thing. Sparse but honest > dense but noisy.
@@ -321,4 +343,4 @@ pnl = (exit_price - entry_price) * shares
 
 ---
 
-*December 29-30, 2025*
+*December 29-31, 2025*
