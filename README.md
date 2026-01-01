@@ -56,23 +56,23 @@ See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed training analysis.
 
 ---
 
-## Training Status
+## Training Evolution
 
-| Phase | Size | Updates | Trades | PnL | Win Rate | Entropy | ROI |
-|-------|------|---------|--------|-----|----------|---------|-----|
-| 1 (Shaped rewards) | $5 | 36 | 1,545 | $3.90 | 20.2% | 0.36 (collapsed) | - |
-| 2 (Prob-based) | $5 | 36 | 3,330 | $10.93 ($11*) | 21.2% | 1.05 (healthy) | 55% (57%*) |
-| 3 (Scaled up) | $50 | 36 | 4,133 | $23.10 ($76*) | 15.6% | 0.97 (healthy) | 12% (38%*) |
-| 4 (Share-based) | $500 | 46 | 4,873 | $3,392 | 19.0% | 1.08 (healthy) | 170% |
-| 5 (LACUNA) | $500 | 10+ hrs | 34,730 | ~$50K | 23.3% | 1.05 (healthy) | 2,500% |
+The agent evolved through 5 phases, each fixing problems discovered in the previous:
 
-**Phase 5 (LACUNA)**: 10+ hour paper trading session, $500 per trade, 4 concurrent markets (BTC/ETH/SOL/XRP), $2,000 max exposure.
+| Phase | What Changed | Size | PnL | ROI |
+|-------|--------------|------|-----|-----|
+| 1 | Shaped rewards (failed - entropy collapsed) | $5 | $3.90 | - |
+| 2 | Sparse PnL only, simplified actions (7→3) | $5 | $10.93 | 55% |
+| 3 | Scaled up 10x | $50 | $23.10 | 12% |
+| 4 | Share-based PnL (matches actual market economics) | $500 | $3,392 | 170% |
+| 5 | Temporal architecture + feature normalization | $500 | ~$50K | 2,500% |
 
-**Capital**: Position size × 4 markets = max exposure ($20 Phase 2, $200 Phase 3, $2000 Phase 4-5)
+**Key insight**: Phase 4's switch from `pnl = (exit - entry) × dollars` to `pnl = (exit - entry) × shares` was the breakthrough. At entry price 0.30, you get 3.33 shares per dollar vs 1.43 at 0.70 - same price move, larger return.
 
-*Phases 2-3 used probability-based PnL: `(exit - entry) × dollars`. Phase 4 uses share-based PnL: `(exit - entry) × shares`. The starred values show Phases 2-3 recalculated with share-based formula for comparison.
+**Phase 5 (LACUNA)**: 10+ hour paper trading session. Added TemporalEncoder to capture momentum from last 5 states. BTC carried with +$40K of the $50K total.
 
-See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed phase-by-phase analysis with charts.
+See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed analysis with charts and code.
 
 ---
 
@@ -117,35 +117,34 @@ See [TRAINING_JOURNAL.md](TRAINING_JOURNAL.md) for detailed phase-by-phase analy
 
 Fixed 50% position sizing. Originally had 7 actions with variable sizing (25/50/100%), simplified to reduce complexity.
 
-## Network (Phase 5: Temporal Architecture)
+## Network
 
 ```
-TemporalEncoder: (history_len × 18) → 64 → LayerNorm → tanh → 32
+TemporalEncoder: (5 states × 18 features) → 64 → LayerNorm → tanh → 32
 
-Actor:  [current_state(18) + temporal_features(32)] = 50 → 64 → LN → tanh → 64 → LN → tanh → 3 (softmax)
-Critic: [current_state(18) + temporal_features(32)] = 50 → 96 → LN → tanh → 96 → LN → tanh → 1
+Actor:  [current(18) + temporal(32)] → 64 → LN → tanh → 64 → LN → tanh → 3 (softmax)
+Critic: [current(18) + temporal(32)] → 96 → LN → tanh → 96 → LN → tanh → 1
 ```
 
-**Key changes from Phase 4**:
-- **Temporal processing**: TemporalEncoder compresses last 5 states into momentum/trend features
-- **Asymmetric architecture**: Larger critic (96 units) vs actor (64 units) for better value estimation
-- **Feature normalization**: All 18 input features clamped to [-1, 1] range
+- **Temporal processing**: Last 5 states compressed into 32-dim momentum/trend features
+- **Asymmetric**: Larger critic (96) vs actor (64) for better value estimation
+- **Normalization**: All 18 features clamped to [-1, 1]
 
-## PPO Hyperparameters (Phase 5)
+## PPO Hyperparameters
 
-| Parameter | Value | Change from Phase 4 |
-|-----------|-------|---------------------|
-| `lr_actor` | 1e-4 | - |
-| `lr_critic` | 3e-4 | - |
-| `gamma` | 0.95 | ↓ from 0.99 (shorter horizon) |
-| `gae_lambda` | 0.95 | - |
-| `clip_epsilon` | 0.2 | - |
-| `entropy_coef` | 0.03 | ↓ from 0.10 (allow sparse policy) |
-| `buffer_size` | 256 | ↓ from 512 (faster adaptation) |
-| `batch_size` | 64 | - |
-| `n_epochs` | 10 | - |
-| `history_len` | 5 | NEW |
-| `temporal_dim` | 32 | NEW |
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `lr_actor` | 1e-4 | |
+| `lr_critic` | 3e-4 | Higher for faster value learning |
+| `gamma` | 0.95 | Short horizon (15-min markets) |
+| `gae_lambda` | 0.95 | |
+| `clip_epsilon` | 0.2 | |
+| `entropy_coef` | 0.03 | Low - allow sparse policy (mostly HOLD) |
+| `buffer_size` | 256 | Small for faster adaptation |
+| `batch_size` | 64 | |
+| `n_epochs` | 10 | |
+| `history_len` | 5 | Temporal context window |
+| `temporal_dim` | 32 | Compressed momentum features |
 
 ---
 

@@ -52,16 +52,7 @@ This is a general pattern: **fast signal source + slow execution venue**. The sa
 - Weather derivatives (forecast models + prediction markets)
 - Any market where information propagates with measurable delay
 
-This creates an 18-dimensional state that captures both underlying asset dynamics AND prediction market microstructure:
-
-| Category | Features |
-|----------|----------|
-| Momentum | 1m/5m/10m returns |
-| Order flow | L1/L5 imbalance, trade flow, CVD acceleration |
-| Microstructure | Spread %, trade intensity, large trade flag |
-| Volatility | 5m vol, vol expansion ratio |
-| Position | Has position, side, PnL, time remaining |
-| Regime | Vol regime, trend regime |
+This creates an 18-dimensional state that captures both underlying asset dynamics AND prediction market microstructure. See [README.md](README.md) for the full feature breakdown.
 
 ### Sparse Reward Signal (Current Approach)
 
@@ -190,35 +181,26 @@ You can win 40% of the time and break even. Win 21% of the time but pick your sp
 
 ---
 
-## What Changed Between Phases
+### Phase 1 → 2: The Fix
 
 | Aspect | Phase 1 | Phase 2 |
 |--------|---------|---------|
-| Reward | PnL delta + shaping bonuses | Probability-based PnL (normalized) |
-| Gamma | 0.995 | 0.99 |
+| Reward | PnL delta + shaping bonuses | Sparse PnL only |
 | Entropy coef | 0.02 → 0.05 | 0.10 |
 | Buffer/batch | 2048/128 | 512/64 |
 | Actions | 7 (variable sizing) | 3 (fixed 50%) |
 | Final entropy | 0.36 (collapsed) | 1.05 (healthy) |
-| Final PnL | $3.90 | $10.93 |
 
-**Key changes**:
-
-1. **Removed ALL shaping rewards** - No micro-bonuses, no transaction costs, no spread penalty. Just pure `(exit_prob - entry_prob) * size` on close.
-
-2. **5x entropy coefficient** (0.02 → 0.10) - Stronger exploration incentive. Prevented policy collapse.
-
-3. **Simplified action space** (7 → 3) - Reduced from HOLD + 3 buy sizes + 3 sell sizes to just HOLD, BUY, SELL. Learn *when* to trade before *how much*.
-
-4. **Smaller buffer** (2048 → 512) - 4x more frequent updates. Faster learning signal.
-
-5. **Lower gamma** (0.995 → 0.99) - 15-min markets are short; don't over-weight distant rewards.
-
-6. **Reset reward normalization** - Old running stats were calibrated to shaped rewards.
+**What fixed it**:
+1. Removed ALL shaping rewards - just `(exit_prob - entry_prob) * size` on close
+2. 5x entropy coefficient (0.02 → 0.10) - stronger exploration
+3. Simplified actions (7 → 3) - learn *when* before *how much*
+4. Smaller buffer (2048 → 512) - faster updates
+5. Reset reward normalization stats
 
 ---
 
-## Technical Notes
+### Technical Notes
 
 See [README.md](README.md) for full architecture and hyperparameters.
 
