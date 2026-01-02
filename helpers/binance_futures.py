@@ -6,6 +6,7 @@ Provides: funding rate, open interest, liquidations, mark price.
 """
 import asyncio
 import json
+import os
 import requests
 import websockets
 from datetime import datetime, timezone, timedelta
@@ -13,9 +14,20 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque
 
+# Try to import SOCKS proxy support
+try:
+    from python_socks.async_.asyncio.v2 import Proxy
+    PROXY_AVAILABLE = True
+except ImportError:
+    PROXY_AVAILABLE = False
+
 # Use Asian regional servers for better datacenter IP tolerance
 BINANCE_FUTURES_API = "https://fapi1.binance.com"  # Asia endpoint
 BINANCE_FUTURES_WSS = "wss://fstream1.binance.com"  # Asia WSS endpoint
+
+# Residential proxy for bypassing datacenter IP blocks
+# Format: socks5://user:pass@host:port
+PROXY_URL = os.environ.get("BINANCE_PROXY_URL", "")
 
 # Asset to futures symbol mapping
 FUTURES_SYMBOLS = {
@@ -251,6 +263,14 @@ class FuturesStreamer:
         """Get futures state for an asset."""
         return self.states.get(asset)
 
+    async def _connect_ws(self, url: str, host: str = "fstream1.binance.com", port: int = 443):
+        """Connect to WebSocket, optionally through proxy."""
+        if PROXY_URL and PROXY_AVAILABLE:
+            proxy = Proxy.from_url(PROXY_URL)
+            sock = await proxy.connect(dest_host=host, dest_port=port)
+            return await websockets.connect(url, sock=sock, server_hostname=host)
+        return await websockets.connect(url)
+
     async def _poll_rest_data(self):
         """Periodically fetch REST data (funding, OI, klines)."""
         while self.running:
@@ -300,9 +320,12 @@ class FuturesStreamer:
         streams = "/".join([f"{s}@aggTrade" for s in symbols])
         url = f"{BINANCE_FUTURES_WSS}/stream?streams={streams}"
 
+        proxy_status = "via proxy" if (PROXY_URL and PROXY_AVAILABLE) else "direct"
+        print(f"Connecting to Binance Futures trades ({proxy_status})...")
+
         while self.running:
             try:
-                async with websockets.connect(url) as ws:
+                async with await self._connect_ws(url) as ws:
                     while self.running:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=5.0)
@@ -366,7 +389,7 @@ class FuturesStreamer:
 
         while self.running:
             try:
-                async with websockets.connect(url) as ws:
+                async with await self._connect_ws(url) as ws:
                     while self.running:
                         try:
                             msg = await asyncio.wait_for(ws.recv(), timeout=5.0)

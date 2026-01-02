@@ -3,12 +3,24 @@ Binance WebSocket helpers for real-time crypto price data.
 """
 import asyncio
 import json
+import os
 import websockets
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Callable, Optional
 
+# Try to import SOCKS proxy support
+try:
+    from python_socks.async_.asyncio.v2 import Proxy
+    PROXY_AVAILABLE = True
+except ImportError:
+    PROXY_AVAILABLE = False
+
 BINANCE_WSS = "wss://stream.binance.com:9443"
+
+# Residential proxy for bypassing datacenter IP blocks
+# Format: socks5://user:pass@host:port
+PROXY_URL = os.environ.get("BINANCE_PROXY_URL", "")
 
 # Asset to Binance symbol mapping
 SYMBOLS = {
@@ -68,6 +80,14 @@ class BinanceStreamer:
         state = self.states.get(asset)
         return state.history[-n:] if state else []
 
+    async def _connect_ws(self, url: str):
+        """Connect to WebSocket, optionally through proxy."""
+        if PROXY_URL and PROXY_AVAILABLE:
+            proxy = Proxy.from_url(PROXY_URL)
+            sock = await proxy.connect(dest_host="stream.binance.com", dest_port=9443)
+            return await websockets.connect(url, sock=sock, server_hostname="stream.binance.com")
+        return await websockets.connect(url)
+
     async def stream(self):
         """Start streaming prices."""
         self.running = True
@@ -77,11 +97,12 @@ class BinanceStreamer:
         streams = "/".join([f"{s}@trade" for s in symbols])
         url = f"{BINANCE_WSS}/stream?streams={streams}"
 
-        print(f"Connecting to Binance WSS for {', '.join(self.assets)}...")
+        proxy_status = "via proxy" if (PROXY_URL and PROXY_AVAILABLE) else "direct"
+        print(f"Connecting to Binance WSS for {', '.join(self.assets)} ({proxy_status})...")
 
         while self.running:
             try:
-                async with websockets.connect(url) as ws:
+                async with await self._connect_ws(url) as ws:
                     print("✓ Connected to Binance")
 
                     while self.running:
