@@ -216,8 +216,8 @@ class TradingWorker:
         # Try to recover from crashed sessions
         recovered = await self._recover_session()
 
-        if not recovered:
-            # Create paper session (always)
+        # Create paper session if not recovered
+        if not self.paper_session_id:
             self.paper_session_id = await self.db.create_session(
                 mode="paper",
                 trade_size=self.trade_size,
@@ -230,21 +230,22 @@ class TradingWorker:
             )
             logger.info(f"[PAPER] Created session: {self.paper_session_id}")
 
-            # Create live session (if enabled)
-            if self.live_enabled and self.live_executor:
-                self.live_session_id = await self.db.create_session(
-                    mode="live",
-                    trade_size=self.trade_size,
-                    model_version=f"rl_model_{'mlx' if USE_MLX else 'numpy'}",
-                    config={
-                        "assets": self.assets,
-                        "use_mlx": USE_MLX,
-                        "dual_mode": self.dual_mode,
-                    }
-                )
-                logger.info(f"[LIVE] Created session: {self.live_session_id}")
+        # Create live session if enabled and not recovered
+        if self.live_enabled and self.live_executor and not self.live_session_id:
+            self.live_session_id = await self.db.create_session(
+                mode="live",
+                trade_size=self.trade_size,
+                model_version=f"rl_model_{'mlx' if USE_MLX else 'numpy'}",
+                config={
+                    "assets": self.assets,
+                    "use_mlx": USE_MLX,
+                    "dual_mode": self.dual_mode,
+                }
+            )
+            logger.info(f"[LIVE] Created session: {self.live_session_id}")
 
-            # Send startup notification
+        # Send startup notification (if not recovered)
+        if not recovered:
             if self.dual_mode:
                 await self.discord.send_startup(
                     mode="dual (paper + live)",
