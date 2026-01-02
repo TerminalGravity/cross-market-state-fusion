@@ -3,15 +3,15 @@
 
 [build]
 builder = "nixpacks"
+buildCommand = "pip install -r requirements-railway.txt"
 
 [deploy]
-# Health check for the web service
-healthcheckPath = "/health"
-healthcheckTimeout = 300
+startCommand = "python railway_worker.py"
+
+# Health check (disabled for worker - no HTTP server)
+# healthcheckPath = "/health"
+# healthcheckTimeout = 300
 
 # Restart policy
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
-
-# Resource limits (optional - uncomment if needed)
-# numReplicas = 1
