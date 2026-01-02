@@ -129,42 +129,70 @@ class TradingWorker:
     def __init__(self):
         # Configuration from environment
         self.trade_size = float(os.getenv("TRADE_SIZE", "50"))
-        self.live_mode = os.getenv("TRADING_MODE", "paper") == "live"
+        self.dual_mode = os.getenv("DUAL_MODE", "false").lower() == "true"
+        self.live_auto_start = os.getenv("TRADING_MODE", "paper") == "live"
         self.model_path = os.getenv("MODEL_PATH", "rl_model")
 
         # Components
         self.db = Database()
         self.discord = DiscordWebhook()
-        self.session_id: Optional[str] = None
+
+        # Sessions (dual mode: separate sessions for paper and live)
+        self.paper_session_id: Optional[str] = None
+        self.live_session_id: Optional[str] = None
+        self.live_enabled = self.live_auto_start
 
         # Strategy (NumPy or MLX depending on platform)
         logger.info(f"Loading strategy (MLX={USE_MLX})")
         self.strategy = RLStrategy(self.model_path) if not USE_MLX else None
 
-        # Executor (paper or live)
-        self.executor = create_executor(live=self.live_mode)
+        # Executors (dual mode: both paper and live)
+        self.paper_executor = create_executor(live=False)
+        self.live_executor = None
+        if self.dual_mode or self.live_auto_start:
+            try:
+                self.live_executor = create_executor(live=True)
+                logger.info("✓ Live executor initialized")
+            except Exception as e:
+                logger.error(f"✗ Live executor failed to initialize: {e}")
+                self.live_enabled = False
 
-        # Data streams
+        # Data streams (shared between executors)
         self.assets = ["BTC", "ETH", "SOL", "XRP"]
         self.orderbook_streamer = OrderbookStreamer()
         self.price_streamer = BinanceStreamer(self.assets)
         self.futures_streamer = FuturesStreamer(self.assets)
 
-        # State
+        # State (shared market data)
         self.markets: Dict[str, Market] = {}
         self.market_states: Dict[str, MarketState] = {}
-        self.positions: Dict[str, Position] = {}
         self.open_prices: Dict[str, float] = {}
 
-        # Stats
-        self.total_pnl = 0.0
-        self.trade_count = 0
-        self.win_count = 0
+        # Positions (separate per executor)
+        self.paper_positions: Dict[str, Position] = {}
+        self.live_positions: Dict[str, Position] = {}
+
+        # Stats (separate per mode)
+        self.paper_total_pnl = 0.0
+        self.paper_trade_count = 0
+        self.paper_win_count = 0
+
+        self.live_total_pnl = 0.0
+        self.live_trade_count = 0
+        self.live_win_count = 0
+
+        # Live failure tracking
+        self.live_failure_count = 0
+        self.live_max_failures = 3
+
+        # Shared milestones
         self.milestones_hit = set()
 
         # Control
         self.running = False
         self.shutdown_event = asyncio.Event()
+
+        logger.info(f"TradingWorker initialized (dual_mode={self.dual_mode}, live_enabled={self.live_enabled})")
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -178,80 +206,152 @@ class TradingWorker:
         await self.db.connect()
         logger.info("Database connected")
 
-        # Try to recover from crashed session
+        # Try to recover from crashed sessions
         recovered = await self._recover_session()
 
         if not recovered:
-            # Create new session
-            self.session_id = await self.db.create_session(
-                mode="live" if self.live_mode else "paper",
+            # Create paper session (always)
+            self.paper_session_id = await self.db.create_session(
+                mode="paper",
                 trade_size=self.trade_size,
                 model_version=f"rl_model_{'mlx' if USE_MLX else 'numpy'}",
                 config={
                     "assets": self.assets,
                     "use_mlx": USE_MLX,
+                    "dual_mode": self.dual_mode,
                 }
             )
-            logger.info(f"Created new session: {self.session_id}")
+            logger.info(f"[PAPER] Created session: {self.paper_session_id}")
+
+            # Create live session (if enabled)
+            if self.live_enabled and self.live_executor:
+                self.live_session_id = await self.db.create_session(
+                    mode="live",
+                    trade_size=self.trade_size,
+                    model_version=f"rl_model_{'mlx' if USE_MLX else 'numpy'}",
+                    config={
+                        "assets": self.assets,
+                        "use_mlx": USE_MLX,
+                        "dual_mode": self.dual_mode,
+                    }
+                )
+                logger.info(f"[LIVE] Created session: {self.live_session_id}")
 
             # Send startup notification
-            await self.discord.send_startup(
-                mode="live" if self.live_mode else "paper",
-                trade_size=self.trade_size,
-                model_version=f"rl_model ({'MLX' if USE_MLX else 'NumPy'})"
-            )
+            if self.dual_mode:
+                await self.discord.send_startup(
+                    mode="dual (paper + live)",
+                    trade_size=self.trade_size,
+                    model_version=f"rl_model ({'MLX' if USE_MLX else 'NumPy'})"
+                )
+            else:
+                await self.discord.send_startup(
+                    mode="live" if self.live_enabled else "paper",
+                    trade_size=self.trade_size,
+                    model_version=f"rl_model ({'MLX' if USE_MLX else 'NumPy'})"
+                )
 
     async def _recover_session(self) -> bool:
-        """Attempt to recover from crashed session."""
-        session = await self.db.get_active_session()
+        """Attempt to recover from crashed sessions (dual-mode aware)."""
+        recovered_any = False
 
-        if not session or not session.get("checkpoint_data"):
-            return False
+        # Try to recover paper session
+        paper_session = await self.db.get_session_by_mode(mode="paper", status="running")
+        if paper_session and paper_session.get("checkpoint_data"):
+            logger.info(f"[PAPER] Recovering session {paper_session['id']}")
+            self.paper_session_id = str(paper_session["id"])
+            self.paper_total_pnl = float(paper_session["total_pnl"] or 0)
+            self.paper_trade_count = paper_session["trade_count"] or 0
+            self.paper_win_count = paper_session["win_count"] or 0
 
-        logger.info(f"Recovering session {session['id']}")
-        self.session_id = str(session["id"])
-        self.total_pnl = float(session["total_pnl"] or 0)
-        self.trade_count = session["trade_count"] or 0
-        self.win_count = session["win_count"] or 0
+            # Restore paper positions
+            checkpoint = paper_session["checkpoint_data"]
+            if "positions" in checkpoint:
+                for cid, pos_data in checkpoint["positions"].items():
+                    if pos_data.get("size", 0) > 0:
+                        self.paper_positions[cid] = Position.from_dict(pos_data)
 
-        # Restore positions
-        checkpoint = session["checkpoint_data"]
-        if "positions" in checkpoint:
-            for cid, pos_data in checkpoint["positions"].items():
-                if pos_data.get("size", 0) > 0:
-                    self.positions[cid] = Position.from_dict(pos_data)
+            recovered_any = True
+
+        # Try to recover live session (if enabled)
+        if self.live_enabled:
+            live_session = await self.db.get_session_by_mode(mode="live", status="running")
+            if live_session and live_session.get("checkpoint_data"):
+                logger.info(f"[LIVE] Recovering session {live_session['id']}")
+                self.live_session_id = str(live_session["id"])
+                self.live_total_pnl = float(live_session["total_pnl"] or 0)
+                self.live_trade_count = live_session["trade_count"] or 0
+                self.live_win_count = live_session["win_count"] or 0
+
+                # Restore live positions
+                checkpoint = live_session["checkpoint_data"]
+                if "positions" in checkpoint:
+                    for cid, pos_data in checkpoint["positions"].items():
+                        if pos_data.get("size", 0) > 0:
+                            self.live_positions[cid] = Position.from_dict(pos_data)
+
+                recovered_any = True
 
         # Send recovery notification
-        await self.discord.send_recovery(
-            session_id=self.session_id,
-            recovered_pnl=self.total_pnl,
-            recovered_trades=self.trade_count,
-            open_positions=len([p for p in self.positions.values() if p.size > 0])
-        )
+        if recovered_any:
+            if self.dual_mode:
+                await self.discord.send_recovery(
+                    session_id=f"paper:{self.paper_session_id}, live:{self.live_session_id}",
+                    recovered_pnl=self.paper_total_pnl + self.live_total_pnl,
+                    recovered_trades=self.paper_trade_count + self.live_trade_count,
+                    open_positions=len(self.paper_positions) + len(self.live_positions)
+                )
+            else:
+                session_id = self.paper_session_id or self.live_session_id
+                total_pnl = self.paper_total_pnl or self.live_total_pnl
+                trade_count = self.paper_trade_count or self.live_trade_count
+                positions = self.paper_positions if self.paper_session_id else self.live_positions
+                await self.discord.send_recovery(
+                    session_id=session_id,
+                    recovered_pnl=total_pnl,
+                    recovered_trades=trade_count,
+                    open_positions=len(positions)
+                )
 
-        return True
+        return recovered_any
 
     async def checkpoint(self) -> None:
-        """Save current state for crash recovery."""
-        if not self.session_id:
-            return
+        """Save current state for crash recovery (dual-mode aware)."""
+        # Checkpoint paper session
+        if self.paper_session_id:
+            paper_checkpoint = {
+                "positions": {
+                    cid: pos.to_dict()
+                    for cid, pos in self.paper_positions.items()
+                    if pos.size > 0
+                },
+                "open_prices": self.open_prices,
+            }
+            await self.db.update_session_checkpoint(
+                session_id=self.paper_session_id,
+                checkpoint_data=paper_checkpoint,
+                total_pnl=self.paper_total_pnl,
+                trade_count=self.paper_trade_count,
+                win_count=self.paper_win_count
+            )
 
-        checkpoint_data = {
-            "positions": {
-                cid: pos.to_dict()
-                for cid, pos in self.positions.items()
-                if pos.size > 0
-            },
-            "open_prices": self.open_prices,
-        }
-
-        await self.db.update_session_checkpoint(
-            session_id=self.session_id,
-            checkpoint_data=checkpoint_data,
-            total_pnl=self.total_pnl,
-            trade_count=self.trade_count,
-            win_count=self.win_count
-        )
+        # Checkpoint live session (if enabled)
+        if self.live_session_id and self.live_enabled:
+            live_checkpoint = {
+                "positions": {
+                    cid: pos.to_dict()
+                    for cid, pos in self.live_positions.items()
+                    if pos.size > 0
+                },
+                "open_prices": self.open_prices,
+            }
+            await self.db.update_session_checkpoint(
+                session_id=self.live_session_id,
+                checkpoint_data=live_checkpoint,
+                total_pnl=self.live_total_pnl,
+                trade_count=self.live_trade_count,
+                win_count=self.live_win_count
+            )
 
     async def refresh_markets(self) -> None:
         """Refresh active Polymarket markets."""
@@ -374,7 +474,7 @@ class TradingWorker:
 
         return action, probs_np, confidence
 
-    async def execute_action(
+    async def execute_action_dual_mode(
         self,
         cid: str,
         market: Market,
@@ -383,8 +483,63 @@ class TradingWorker:
         probs: np.ndarray,
         confidence: float
     ) -> None:
-        """Execute trading action."""
-        pos = self.positions.get(cid)
+        """Execute action on both paper and live modes in parallel."""
+        tasks = []
+
+        # Always execute paper
+        tasks.append(
+            self._execute_action_single(
+                cid, market, action, state, probs, confidence,
+                mode='paper',
+                executor=self.paper_executor,
+                positions=self.paper_positions,
+                session_id=self.paper_session_id
+            )
+        )
+
+        # Execute live if enabled
+        if self.live_enabled and self.live_executor and self.live_session_id:
+            tasks.append(
+                self._execute_action_single(
+                    cid, market, action, state, probs, confidence,
+                    mode='live',
+                    executor=self.live_executor,
+                    positions=self.live_positions,
+                    session_id=self.live_session_id
+                )
+            )
+
+        # Run in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Check for live failures
+        if len(results) > 1 and isinstance(results[1], Exception):
+            logger.error(f"[LIVE] Execution failed: {results[1]}")
+            self.live_failure_count += 1
+
+            if self.live_failure_count >= self.live_max_failures:
+                logger.error(f"[LIVE] Disabled after {self.live_max_failures} failures")
+                self.live_enabled = False
+                await self.discord.send_error(
+                    message=f"⚠️ Live trading disabled after {self.live_max_failures} failures",
+                    details=f"Error: {results[1]}\n\nPaper mode continues running."
+                )
+
+    async def _execute_action_single(
+        self,
+        cid: str,
+        market: Market,
+        action: Action,
+        state: MarketState,
+        probs: np.ndarray,
+        confidence: float,
+        mode: str,
+        executor,
+        positions: Dict[str, Position],
+        session_id: str
+    ) -> None:
+        """Execute trading action for a single mode (paper or live)."""
+        pos = positions.get(cid)
 
         if action == Action.HOLD:
             return
@@ -396,7 +551,7 @@ class TradingWorker:
 
             # Record to database
             trade_id = await self.db.record_trade_open(
-                session_id=self.session_id,
+                session_id=session_id,
                 condition_id=cid,
                 asset=market.asset,
                 entry_price=state.prob,
@@ -409,7 +564,7 @@ class TradingWorker:
             )
 
             # Update local state
-            self.positions[cid] = Position(
+            positions[cid] = Position(
                 asset=market.asset,
                 side="UP",
                 size=amount,
@@ -422,22 +577,29 @@ class TradingWorker:
                 action_probs={"hold": float(probs[0]), "buy": float(probs[1]), "sell": float(probs[2])}
             )
 
-            self.trade_count += 1
+            # Update mode-specific stats
+            if mode == 'paper':
+                self.paper_trade_count += 1
+                session_pnl = self.paper_total_pnl
+            else:
+                self.live_trade_count += 1
+                session_pnl = self.live_total_pnl
 
             logger.info(
-                f"BUY {market.asset} UP @ {state.prob*100:.1f}% | "
+                f"[{mode.upper()}] BUY {market.asset} UP @ {state.prob*100:.1f}% | "
                 f"${amount:.2f} | conf={confidence*100:.0f}%"
             )
 
-            # Discord alert
-            await self.discord.send_trade_open(
-                asset=market.asset,
-                side="UP",
-                entry_price=state.prob,
-                size=amount,
-                confidence=confidence,
-                session_pnl=self.total_pnl
-            )
+            # Discord alert (only for live or paper if not dual mode)
+            if mode == 'live' or not self.dual_mode:
+                await self.discord.send_trade_open(
+                    asset=market.asset,
+                    side="UP",
+                    entry_price=state.prob,
+                    size=amount,
+                    confidence=confidence,
+                    session_pnl=session_pnl
+                )
 
         elif action == Action.SELL and pos and pos.size > 0:
             # Close position
@@ -460,37 +622,50 @@ class TradingWorker:
                     duration_seconds=duration
                 )
 
-            # Update stats
-            self.total_pnl += pnl
-            if pnl > 0:
-                self.win_count += 1
+            # Update mode-specific stats
+            if mode == 'paper':
+                self.paper_total_pnl += pnl
+                if pnl > 0:
+                    self.paper_win_count += 1
+                session_pnl = self.paper_total_pnl
+                trade_count = self.paper_trade_count
+                win_count = self.paper_win_count
+            else:
+                self.live_total_pnl += pnl
+                if pnl > 0:
+                    self.live_win_count += 1
+                session_pnl = self.live_total_pnl
+                trade_count = self.live_trade_count
+                win_count = self.live_win_count
 
-            win_rate = self.win_count / self.trade_count if self.trade_count > 0 else 0
+            win_rate = win_count / trade_count if trade_count > 0 else 0
 
             logger.info(
-                f"SELL {market.asset} @ {state.prob*100:.1f}% | "
+                f"[{mode.upper()}] SELL {market.asset} @ {state.prob*100:.1f}% | "
                 f"PnL: {'+'if pnl >= 0 else ''}{pnl:.2f} | {duration}s | "
-                f"Total: ${self.total_pnl:.2f}"
+                f"Total: ${session_pnl:.2f}"
             )
 
-            # Discord alert
-            await self.discord.send_trade_close(
-                asset=market.asset,
-                side=pos.side,
-                pnl=pnl,
-                duration=duration,
-                entry_price=pos.entry_price,
-                exit_price=state.prob,
-                session_pnl=self.total_pnl,
-                session_trades=self.trade_count,
-                session_win_rate=win_rate
-            )
+            # Discord alert (only for live or paper if not dual mode)
+            if mode == 'live' or not self.dual_mode:
+                await self.discord.send_trade_close(
+                    asset=market.asset,
+                    side=pos.side,
+                    pnl=pnl,
+                    duration=duration,
+                    entry_price=pos.entry_price,
+                    exit_price=state.prob,
+                    session_pnl=session_pnl,
+                    session_trades=trade_count,
+                    session_win_rate=win_rate
+                )
 
-            # Check milestones
-            await self._check_milestones()
+            # Check milestones (shared across modes)
+            if mode == 'paper':
+                await self._check_milestones()
 
             # Clear position
-            self.positions[cid] = Position(asset=market.asset)
+            positions[cid] = Position(asset=market.asset)
 
     async def _check_milestones(self) -> None:
         """Check and alert on PnL milestones."""
@@ -607,7 +782,18 @@ class TradingWorker:
                             continue
 
                         action, probs, confidence = self.get_rl_action(state)
-                        await self.execute_action(cid, market, action, state, probs, confidence)
+
+                        # Execute on both modes if dual-mode enabled
+                        if self.dual_mode or self.live_enabled:
+                            await self.execute_action_dual_mode(cid, market, action, state, probs, confidence)
+                        else:
+                            await self._execute_action_single(
+                                cid, market, action, state, probs, confidence,
+                                mode='paper',
+                                executor=self.paper_executor,
+                                positions=self.paper_positions,
+                                session_id=self.paper_session_id
+                            )
 
                     except Exception as e:
                         logger.error(f"Error processing {market.asset}: {e}")
