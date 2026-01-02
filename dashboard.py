@@ -708,6 +708,18 @@ def index():
     return render_template_string(HTML_TEMPLATE)
 
 
+@app.route('/health')
+def health():
+    """Health check endpoint for Railway."""
+    from flask import jsonify
+    return jsonify({
+        "status": "healthy",
+        "strategy": dashboard_state.strategy_name or "none",
+        "pnl": dashboard_state.total_pnl,
+        "trades": dashboard_state.trade_count,
+    })
+
+
 def emit_state():
     """Emit current state to all clients."""
     socketio.emit('state_update', {

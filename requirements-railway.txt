@@ -1,13 +1,17 @@
 # Railway deployment requirements (Linux compatible)
-# Note: MLX is macOS-only, so this deployment runs dashboard in monitor mode
+# Note: MLX is macOS-only, uses NumPy inference on Railway
 
 # Core (skip MLX - macOS only)
 numpy>=1.24.0
 safetensors>=0.4.0
 
+# Database
+asyncpg>=0.29.0
+
 # Web/API
 aiohttp>=3.9.0
 websockets>=12.0
+requests>=2.31.0
 
 # Dashboard
 flask>=3.0.0
@@ -19,3 +23,6 @@ gevent-websocket>=0.10.1
 
 # Utils
 python-dotenv>=1.0.0
+
+# Polymarket Trading
+py-clob-client>=0.29.0
