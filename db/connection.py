@@ -345,6 +345,111 @@ class Database:
         """, session_id, str(hours))
 
     # =========================================================================
+    # Transfer Operations (Profit Transfer System)
+    # =========================================================================
+
+    async def record_transfer(
+        self,
+        session_id: str,
+        amount: float,
+        tx_hash: Optional[str] = None,
+        status: str = "pending",
+        trigger_reason: str = "threshold"
+    ) -> int:
+        """
+        Record a profit transfer attempt.
+
+        Args:
+            session_id: Trading session ID
+            amount: Transfer amount in dollars
+            tx_hash: Optional transaction hash (set after sending)
+            status: Transfer status ('pending', 'sent', 'confirmed', 'failed', 'timeout')
+            trigger_reason: Why transfer triggered ('threshold', 'time_interval', 'manual')
+
+        Returns:
+            Transfer ID (integer)
+        """
+        row = await self.fetchrow("""
+            INSERT INTO transfers (session_id, amount, tx_hash, status, trigger_reason)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        """, session_id, amount, tx_hash, status, trigger_reason)
+        return int(row["id"])
+
+    async def update_transfer_status(
+        self,
+        transfer_id: int,
+        status: str,
+        tx_hash: Optional[str] = None,
+        gas_used: Optional[int] = None,
+        error_message: Optional[str] = None
+    ) -> None:
+        """
+        Update transfer status after confirmation or failure.
+
+        Args:
+            transfer_id: Transfer ID from record_transfer()
+            status: New status ('sent', 'confirmed', 'failed', 'timeout')
+            tx_hash: Optional transaction hash (if newly available)
+            gas_used: Gas used for confirmed transactions
+            error_message: Error details for failed transactions
+        """
+        await self.execute("""
+            UPDATE transfers
+            SET status = $2,
+                tx_hash = COALESCE($3, tx_hash),
+                gas_used = COALESCE($4, gas_used),
+                error_message = COALESCE($5, error_message),
+                confirmed_at = CASE WHEN $2 = 'confirmed' THEN NOW() ELSE confirmed_at END,
+                retry_count = retry_count + 1
+            WHERE id = $1
+        """, transfer_id, status, tx_hash, gas_used, error_message)
+
+    async def get_transfer_history(
+        self,
+        session_id: str,
+        limit: int = 50
+    ) -> List[asyncpg.Record]:
+        """
+        Get recent transfers for a session.
+
+        Args:
+            session_id: Trading session ID
+            limit: Maximum number of transfers to return
+
+        Returns:
+            List of transfer records
+        """
+        return await self.fetch("""
+            SELECT * FROM transfers
+            WHERE session_id = $1
+            ORDER BY created_at DESC
+            LIMIT $2
+        """, session_id, limit)
+
+    async def get_session_by_mode(
+        self,
+        mode: str = "paper",
+        status: str = "running"
+    ) -> Optional[asyncpg.Record]:
+        """
+        Get session by mode and status (for crash recovery).
+
+        Args:
+            mode: 'paper' or 'live'
+            status: Session status (default: 'running')
+
+        Returns:
+            Session record or None
+        """
+        return await self.fetchrow("""
+            SELECT * FROM sessions
+            WHERE mode = $1 AND status = $2
+            ORDER BY started_at DESC
+            LIMIT 1
+        """, mode, status)
+
+    # =========================================================================
     # Dual-Mode Comparison Operations
     # =========================================================================
 
