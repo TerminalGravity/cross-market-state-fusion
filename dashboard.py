@@ -137,6 +137,14 @@ HTML_TEMPLATE = """
             color: var(--muted);
             text-transform: lowercase;
         }
+        .metric-group {
+            display: flex;
+            gap: 24px;
+            padding: 0 16px;
+            border-left: 2px solid var(--border);
+        }
+        .metric-group.paper { border-color: var(--blue); }
+        .metric-group.live { border-color: var(--yellow); }
         .clock {
             color: var(--dim);
             font-size: 11px;
@@ -391,17 +399,35 @@ HTML_TEMPLATE = """
                 </div>
             </div>
             <div class="metrics">
-                <div class="metric">
-                    <div class="metric-val" id="total-pnl">$0.00</div>
-                    <div class="metric-lbl">pnl</div>
+                <!-- Paper Mode -->
+                <div class="metric-group paper">
+                    <div class="metric">
+                        <div class="metric-val" id="paper-pnl">$0.00</div>
+                        <div class="metric-lbl">paper pnl</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-val" id="paper-win-rate">0%</div>
+                        <div class="metric-lbl">win</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-val" id="paper-trades">0</div>
+                        <div class="metric-lbl">trades</div>
+                    </div>
                 </div>
-                <div class="metric">
-                    <div class="metric-val" id="win-rate">0%</div>
-                    <div class="metric-lbl">win</div>
-                </div>
-                <div class="metric">
-                    <div class="metric-val" id="trade-count">0</div>
-                    <div class="metric-lbl">trades</div>
+                <!-- Live Mode -->
+                <div class="metric-group live" id="live-metrics" style="display: none;">
+                    <div class="metric">
+                        <div class="metric-val" id="live-pnl">$0.00</div>
+                        <div class="metric-lbl">live pnl</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-val" id="live-win-rate">0%</div>
+                        <div class="metric-lbl">win</div>
+                    </div>
+                    <div class="metric">
+                        <div class="metric-val" id="live-trades">0</div>
+                        <div class="metric-lbl">trades</div>
+                    </div>
                 </div>
             </div>
             <div class="clock" id="clock">00:00:00</div>
@@ -551,27 +577,56 @@ HTML_TEMPLATE = """
 
         socket.on('state_update', (d) => {
             document.getElementById('strategy-name').textContent = (d.strategy_name || 'ppo').toLowerCase();
-            const pnl = d.total_pnl || 0;
-            const pnlEl = document.getElementById('total-pnl');
-            pnlEl.textContent = fmt(pnl);
-            pnlEl.className = 'metric-val ' + (pnl >= 0 ? 'pos' : 'neg');
 
-            const tc = d.trade_count || 0;
-            document.getElementById('trade-count').textContent = tc;
-            const wr = tc > 0 ? (d.win_count || 0) / tc * 100 : 0;
-            const wrEl = document.getElementById('win-rate');
-            wrEl.textContent = wr.toFixed(0) + '%';
-            wrEl.className = 'metric-val ' + (wr >= 50 ? 'pos' : wr > 0 ? 'neg' : '');
+            // Update paper metrics
+            const paperPnl = d.paper_total_pnl || 0;
+            const paperPnlEl = document.getElementById('paper-pnl');
+            paperPnlEl.textContent = fmt(paperPnl);
+            paperPnlEl.className = 'metric-val ' + (paperPnl >= 0 ? 'pos' : 'neg');
 
-            document.getElementById('avg-trade').textContent = fmt(tc > 0 ? pnl / tc : 0);
+            const paperTc = d.paper_trade_count || 0;
+            document.getElementById('paper-trades').textContent = paperTc;
+            const paperWr = paperTc > 0 ? (d.paper_win_count || 0) / paperTc * 100 : 0;
+            const paperWrEl = document.getElementById('paper-win-rate');
+            paperWrEl.textContent = paperWr.toFixed(0) + '%';
+            paperWrEl.className = 'metric-val ' + (paperWr >= 50 ? 'pos' : paperWr > 0 ? 'neg' : '');
+
+            // Update live metrics if enabled
+            const liveEnabled = d.live_enabled || false;
+            const liveMetrics = document.getElementById('live-metrics');
+            if (liveEnabled) {
+                liveMetrics.style.display = 'flex';
+                const livePnl = d.live_total_pnl || 0;
+                const livePnlEl = document.getElementById('live-pnl');
+                livePnlEl.textContent = fmt(livePnl);
+                livePnlEl.className = 'metric-val ' + (livePnl >= 0 ? 'pos' : 'neg');
+
+                const liveTc = d.live_trade_count || 0;
+                document.getElementById('live-trades').textContent = liveTc;
+                const liveWr = liveTc > 0 ? (d.live_win_count || 0) / liveTc * 100 : 0;
+                const liveWrEl = document.getElementById('live-win-rate');
+                liveWrEl.textContent = liveWr.toFixed(0) + '%';
+                liveWrEl.className = 'metric-val ' + (liveWr >= 50 ? 'pos' : liveWr > 0 ? 'neg' : '');
+            } else {
+                liveMetrics.style.display = 'none';
+            }
+
+            // Calculate combined stats for performance section
+            const totalPnl = paperPnl + (liveEnabled ? (d.live_total_pnl || 0) : 0);
+            const totalTc = paperTc + (liveEnabled ? (d.live_trade_count || 0) : 0);
+            document.getElementById('avg-trade').textContent = fmt(totalTc > 0 ? totalPnl / totalTc : 0);
+
             let exp = 0;
-            Object.values(d.positions || {}).forEach(p => { if (p.size > 0) exp += p.size; });
+            Object.values(d.paper_positions || {}).forEach(p => { if (p.size > 0) exp += p.size; });
+            if (liveEnabled) {
+                Object.values(d.live_positions || {}).forEach(p => { if (p.size > 0) exp += p.size; });
+            }
             document.getElementById('exposure').textContent = '$' + exp.toFixed(0);
             document.getElementById('best-trade').textContent = fmt(bestTrade);
             document.getElementById('worst-trade').textContent = fmt(worstTrade);
 
             const markets = d.markets || {};
-            const positions = d.positions || {};
+            const positions = d.paper_positions || {}; // Use paper positions for market display
             const grid = document.getElementById('markets-grid');
             const marketKeys = Object.keys(markets);
             // Create hash to detect structural changes (new/removed markets)
