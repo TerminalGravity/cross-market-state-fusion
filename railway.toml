@@ -8,9 +8,8 @@ buildCommand = "pip install -r requirements-railway.txt"
 [deploy]
 startCommand = "python railway_worker.py"
 
-# Health check (disabled for worker - no HTTP server)
-# healthcheckPath = "/health"
-# healthcheckTimeout = 300
+# Deploy to EU (Netherlands) to avoid Binance US geo-blocking
+region = "eu-west"
 
 # Restart policy
 restartPolicyType = "ON_FAILURE"
