@@ -100,10 +100,14 @@ class BinanceStreamer:
         proxy_status = "via proxy" if (PROXY_URL and PROXY_AVAILABLE) else "direct"
         print(f"Connecting to Binance WSS for {', '.join(self.assets)} ({proxy_status})...")
 
+        backoff = 1
+        max_backoff = 120  # Max 2 minutes between retries
+
         while self.running:
             try:
                 async with await self._connect_ws(url) as ws:
                     print("✓ Connected to Binance")
+                    backoff = 1  # Reset on success
 
                     while self.running:
                         try:
@@ -136,8 +140,10 @@ class BinanceStreamer:
                             pass
 
             except Exception as e:
-                print(f"WSS error: {e}, reconnecting...")
-                await asyncio.sleep(1)
+                if backoff < 10:  # Only log first few retries
+                    print(f"Binance WSS error: {e}, retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     def stop(self):
         """Stop streaming."""

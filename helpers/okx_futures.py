@@ -327,9 +327,13 @@ class OKXFuturesStreamer:
 
     async def _stream_trades(self):
         """Stream trades for CVD calculation."""
+        backoff = 1  # Start with 1 second backoff
+        max_backoff = 60  # Max 60 seconds between retries
+
         while self.running:
             try:
                 async with websockets.connect(OKX_WSS) as ws:
+                    backoff = 1  # Reset backoff on successful connection
                     # Subscribe to trades for all instruments
                     sub_msg = {
                         "op": "subscribe",
@@ -390,14 +394,19 @@ class OKXFuturesStreamer:
                             await ws.send("ping")
 
             except Exception as e:
-                print(f"OKX trade stream error: {e}")
-                await asyncio.sleep(2)
+                print(f"OKX trade stream error: {e}, retrying in {backoff}s...")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)  # Exponential backoff
 
     async def _stream_liquidations(self):
         """Stream liquidation orders from OKX."""
+        backoff = 1
+        max_backoff = 60
+
         while self.running:
             try:
                 async with websockets.connect(OKX_WSS) as ws:
+                    backoff = 1
                     # Subscribe to liquidation orders
                     sub_msg = {
                         "op": "subscribe",
@@ -436,7 +445,8 @@ class OKXFuturesStreamer:
 
             except Exception as e:
                 # Liquidations stream might not always be available
-                await asyncio.sleep(5)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
 
     async def _decay_volumes(self):
         """Periodically decay counters."""
