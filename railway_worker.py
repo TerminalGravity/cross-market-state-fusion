@@ -40,7 +40,8 @@ from helpers.discord import DiscordWebhook
 from helpers.polymarket_api import get_15m_markets, Market
 from helpers.orderbook_wss import OrderbookStreamer, OrderbookState
 from helpers.binance_wss import BinanceStreamer
-from helpers.binance_futures import FuturesStreamer
+# Use OKX for futures data - datacenter-friendly (Binance blocks cloud IPs)
+from helpers.okx_futures import OKXFuturesStreamer as FuturesStreamer
 from helpers.clob_executor import create_executor
 from strategies.base import MarketState, Action
 
