@@ -345,6 +345,54 @@ class Database:
         """, session_id, str(hours))
 
     # =========================================================================
+    # Dual-Mode Comparison Operations
+    # =========================================================================
+
+    async def get_dual_mode_summary(self) -> Optional[asyncpg.Record]:
+        """Get current dual-mode session summary (paper + live)."""
+        return await self.fetchrow("""
+            SELECT * FROM dual_mode_sessions
+            WHERE status = 'running'
+            LIMIT 1
+        """)
+
+    async def get_execution_comparison(
+        self,
+        hours: int = 24
+    ) -> List[asyncpg.Record]:
+        """Compare execution quality between paper and live modes."""
+        return await self.fetch("""
+            SELECT * FROM execution_quality
+        """)
+
+    async def get_session_by_mode(
+        self,
+        mode: str,
+        status: str = 'running'
+    ) -> Optional[asyncpg.Record]:
+        """Get active session for specific mode (paper or live)."""
+        return await self.fetchrow("""
+            SELECT * FROM sessions
+            WHERE mode = $1 AND status = $2
+            ORDER BY started_at DESC
+            LIMIT 1
+        """, mode, status)
+
+    async def get_hourly_performance(self) -> List[asyncpg.Record]:
+        """Get hourly performance comparison between modes."""
+        return await self.fetch("""
+            SELECT * FROM hourly_performance_comparison
+            ORDER BY hour DESC
+            LIMIT 24
+        """)
+
+    async def get_trade_outcomes_comparison(self) -> List[asyncpg.Record]:
+        """Get trade outcome statistics by mode."""
+        return await self.fetch("""
+            SELECT * FROM trade_outcomes_by_mode
+        """)
+
+    # =========================================================================
     # Alert Operations
     # =========================================================================
 

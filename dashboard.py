@@ -24,10 +24,21 @@ from flask_socketio import SocketIO
 class DashboardState:
     def __init__(self):
         self.strategy_name = ""
-        self.total_pnl = 0.0
-        self.trade_count = 0
-        self.win_count = 0
-        self.positions: Dict[str, dict] = {}
+
+        # Paper mode stats
+        self.paper_total_pnl = 0.0
+        self.paper_trade_count = 0
+        self.paper_win_count = 0
+        self.paper_positions: Dict[str, dict] = {}
+
+        # Live mode stats
+        self.live_total_pnl = 0.0
+        self.live_trade_count = 0
+        self.live_win_count = 0
+        self.live_positions: Dict[str, dict] = {}
+        self.live_enabled = False
+
+        # Shared
         self.markets: Dict[str, dict] = {}
         self.rl_metrics: List[dict] = []
         self.pnl_history: List[dict] = []
@@ -715,19 +726,66 @@ def health():
     return jsonify({
         "status": "healthy",
         "strategy": dashboard_state.strategy_name or "none",
-        "pnl": dashboard_state.total_pnl,
-        "trades": dashboard_state.trade_count,
+        "paper_pnl": dashboard_state.paper_total_pnl,
+        "paper_trades": dashboard_state.paper_trade_count,
+        "live_pnl": dashboard_state.live_total_pnl,
+        "live_trades": dashboard_state.live_trade_count,
+        "live_enabled": dashboard_state.live_enabled,
     })
 
 
+@app.route('/api/compare')
+def get_comparison():
+    """Get dual-mode comparison data."""
+    from flask import jsonify
+    import asyncio
+
+    async def _fetch():
+        from db.connection import Database
+        db = Database()
+        await db.connect()
+        try:
+            summary = await db.get_dual_mode_summary()
+            exec_quality = await db.get_execution_comparison(hours=24)
+            trades = await db.fetch("""
+                SELECT t.asset, t.pnl, t.duration_seconds, t.exit_time, s.mode
+                FROM trades t
+                JOIN sessions s ON t.session_id = s.id
+                WHERE t.exit_time > NOW() - INTERVAL '24 hours'
+                ORDER BY t.exit_time DESC LIMIT 100
+            """)
+            return {
+                "summary": dict(summary) if summary else None,
+                "execution_quality": [dict(e) for e in exec_quality],
+                "recent_trades": [dict(t) for t in trades]
+            }
+        finally:
+            await db.close()
+
+    loop = asyncio.new_event_loop()
+    try:
+        data = loop.run_until_complete(_fetch())
+        return jsonify(data)
+    finally:
+        loop.close()
+
+
 def emit_state():
-    """Emit current state to all clients."""
+    """Emit current state to all clients (dual-mode aware)."""
     socketio.emit('state_update', {
         'strategy_name': dashboard_state.strategy_name,
-        'total_pnl': dashboard_state.total_pnl,
-        'trade_count': dashboard_state.trade_count,
-        'win_count': dashboard_state.win_count,
-        'positions': dashboard_state.positions,
+        # Paper mode
+        'paper_total_pnl': dashboard_state.paper_total_pnl,
+        'paper_trade_count': dashboard_state.paper_trade_count,
+        'paper_win_count': dashboard_state.paper_win_count,
+        'paper_positions': dashboard_state.paper_positions,
+        # Live mode
+        'live_total_pnl': dashboard_state.live_total_pnl,
+        'live_trade_count': dashboard_state.live_trade_count,
+        'live_win_count': dashboard_state.live_win_count,
+        'live_positions': dashboard_state.live_positions,
+        'live_enabled': dashboard_state.live_enabled,
+        # Shared
         'markets': dashboard_state.markets,
     })
 
