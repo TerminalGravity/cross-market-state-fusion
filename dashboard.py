@@ -611,10 +611,8 @@ HTML_TEMPLATE = """
                 liveMetrics.style.display = 'none';
             }
 
-            // Calculate combined stats for performance section
-            const totalPnl = paperPnl + (liveEnabled ? (d.live_total_pnl || 0) : 0);
-            const totalTc = paperTc + (liveEnabled ? (d.live_trade_count || 0) : 0);
-            document.getElementById('avg-trade').textContent = fmt(totalTc > 0 ? totalPnl / totalTc : 0);
+            // Use paper-only stats (NO combining with live)
+            document.getElementById('avg-trade').textContent = fmt(paperTc > 0 ? paperPnl / paperTc : 0);
 
             let exp = 0;
             Object.values(d.paper_positions || {}).forEach(p => { if (p.size > 0) exp += p.size; });
