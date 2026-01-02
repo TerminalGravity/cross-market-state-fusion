@@ -130,6 +130,43 @@ CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
 CREATE INDEX IF NOT EXISTS idx_alerts_sent_at ON alerts(sent_at DESC);
 
 -- =============================================================================
+-- TRANSFERS TABLE
+-- Profit transfer audit log (USDC transfers from hot to cold wallet)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS transfers (
+    id SERIAL PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+
+    -- Transfer details
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    amount DECIMAL(12, 4) NOT NULL,  -- USDC amount in dollars
+
+    -- Blockchain transaction
+    tx_hash VARCHAR(66),  -- 0x + 64 hex chars
+    status VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sent', 'confirmed', 'failed', 'timeout')),
+
+    -- Gas tracking
+    gas_limit INTEGER,
+    gas_price VARCHAR(50),  -- Store as wei string to avoid precision loss
+    gas_used INTEGER,
+
+    -- Confirmation
+    confirmed_at TIMESTAMPTZ,
+
+    -- Error handling
+    retry_count INTEGER DEFAULT 0,
+    error_message TEXT,
+
+    -- Trigger reason
+    trigger_reason VARCHAR(20) CHECK (trigger_reason IN ('threshold', 'time_interval', 'manual'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfers_session ON transfers(session_id);
+CREATE INDEX IF NOT EXISTS idx_transfers_status ON transfers(status);
+CREATE INDEX IF NOT EXISTS idx_transfers_created_at ON transfers(created_at DESC);
+
+-- =============================================================================
 -- HELPER VIEWS
 -- =============================================================================
 

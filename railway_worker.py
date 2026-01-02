@@ -146,6 +146,13 @@ class TradingWorker:
         logger.info(f"Loading strategy (MLX={USE_MLX})")
         self.strategy = RLStrategy(self.model_path) if not USE_MLX else None
 
+        # Profit transfer components (LIVE mode only)
+        self.profit_transfer_enabled = os.getenv("COLD_WALLET_ADDRESS") is not None
+        self.balance_tracker: Optional[Any] = None
+        self.transfer_executor: Optional[Any] = None
+        self.profit_monitor: Optional[Any] = None
+        self.initial_balance: float = 0.0
+
         # Executors (dual mode: both paper and live)
         self.paper_executor = create_executor(live=False)
         self.live_executor = None
@@ -250,6 +257,45 @@ class TradingWorker:
                     trade_size=self.trade_size,
                     model_version=f"rl_model ({'MLX' if USE_MLX else 'NumPy'})"
                 )
+
+        # Initialize profit transfer system (LIVE mode only)
+        if self.profit_transfer_enabled and self.live_enabled and self.live_session_id:
+            try:
+                from helpers.wallet_balance import WalletBalanceTracker
+                from helpers.profit_transfer import ProfitTransferExecutor
+                from helpers.profit_monitor import ProfitMonitor
+
+                rpc_url = os.getenv("POLYGON_RPC_URL")
+                if not rpc_url:
+                    logger.warning("POLYGON_RPC_URL not set - profit transfer disabled")
+                    self.profit_transfer_enabled = False
+                else:
+                    cold_wallet = os.getenv("COLD_WALLET_ADDRESS")
+                    hot_wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS")
+                    private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+
+                    # Initialize balance tracker
+                    self.balance_tracker = WalletBalanceTracker(rpc_url, hot_wallet)
+                    self.initial_balance = await self.balance_tracker.get_balance()
+
+                    # Initialize transfer executor
+                    self.transfer_executor = ProfitTransferExecutor(
+                        rpc_url, private_key, hot_wallet, cold_wallet,
+                        self.db, self.discord
+                    )
+
+                    # Initialize profit monitor
+                    self.profit_monitor = ProfitMonitor(
+                        self.live_session_id, self.db, self.balance_tracker,
+                        self.transfer_executor, self.initial_balance
+                    )
+
+                    logger.info(
+                        f"✓ Profit transfer enabled (initial balance: ${self.initial_balance:.2f})"
+                    )
+            except Exception as e:
+                logger.error(f"✗ Profit transfer initialization failed: {e}")
+                self.profit_transfer_enabled = False
 
     async def _recover_session(self) -> bool:
         """Attempt to recover from crashed sessions (dual-mode aware)."""
@@ -366,8 +412,10 @@ class TradingWorker:
         for m in markets:
             self.orderbook_streamer.subscribe(m.condition_id, m.token_up, m.token_down)
 
-            if m.condition_id not in self.positions:
-                self.positions[m.condition_id] = Position(asset=m.asset)
+            if m.condition_id not in self.paper_positions:
+                self.paper_positions[m.condition_id] = Position(asset=m.asset)
+            if m.condition_id not in self.live_positions:
+                self.live_positions[m.condition_id] = Position(asset=m.asset)
 
             current_price = self.price_streamer.get_price(m.asset)
             if current_price > 0 and m.condition_id not in self.open_prices:
@@ -440,8 +488,8 @@ class TradingWorker:
 
         state.time_remaining = max(0, (market.end_time - now).total_seconds() / 900)
 
-        # Position state
-        pos = self.positions.get(cid)
+        # Position state (use paper position for state calculation)
+        pos = self.paper_positions.get(cid)
         if pos and pos.size > 0:
             state.has_position = True
             state.position_side = pos.side
@@ -668,13 +716,13 @@ class TradingWorker:
             positions[cid] = Position(asset=market.asset)
 
     async def _check_milestones(self) -> None:
-        """Check and alert on PnL milestones."""
+        """Check and alert on PnL milestones (paper mode only - NO combining)."""
         milestones = [100, 250, 500, 1000, 2500, 5000, 10000]
 
         for m in milestones:
-            if self.total_pnl >= m and m not in self.milestones_hit:
+            if self.paper_total_pnl >= m and m not in self.milestones_hit:
                 self.milestones_hit.add(m)
-                await self.discord.send_milestone(self.total_pnl, m)
+                await self.discord.send_milestone(self.paper_total_pnl, m)
 
     async def _checkpoint_loop(self) -> None:
         """Background task: checkpoint every 30 seconds."""
@@ -686,27 +734,45 @@ class TradingWorker:
                 logger.error(f"Checkpoint failed: {e}")
 
     async def _metrics_loop(self) -> None:
-        """Background task: record metrics every minute."""
+        """Background task: record metrics every minute (separate for paper and live)."""
         while self.running:
             await asyncio.sleep(60)
             try:
-                open_positions = len([p for p in self.positions.values() if p.size > 0])
-                total_exposure = sum(p.size for p in self.positions.values() if p.size > 0)
+                markets_data = {
+                    a: {"prob": self.market_states.get(cid, MarketState(a, 0.5, 0)).prob}
+                    for cid, m in self.markets.items()
+                    for a in [m.asset]
+                }
 
-                await self.db.record_metrics(
-                    session_id=self.session_id,
-                    cumulative_pnl=self.total_pnl,
-                    trades_today=self.trade_count,
-                    win_rate_today=self.win_count / max(1, self.trade_count),
-                    open_positions=open_positions,
-                    total_exposure=total_exposure,
-                    active_markets=len(self.markets),
-                    markets_data={
-                        a: {"prob": self.market_states.get(cid, MarketState(a, 0.5, 0)).prob}
-                        for cid, m in self.markets.items()
-                        for a in [m.asset]
-                    }
-                )
+                # Record paper metrics
+                if self.paper_session_id:
+                    paper_open_pos = len([p for p in self.paper_positions.values() if p.size > 0])
+                    paper_exposure = sum(p.size for p in self.paper_positions.values() if p.size > 0)
+                    await self.db.record_metrics(
+                        session_id=self.paper_session_id,
+                        cumulative_pnl=self.paper_total_pnl,
+                        trades_today=self.paper_trade_count,
+                        win_rate_today=self.paper_win_count / max(1, self.paper_trade_count),
+                        open_positions=paper_open_pos,
+                        total_exposure=paper_exposure,
+                        active_markets=len(self.markets),
+                        markets_data=markets_data
+                    )
+
+                # Record live metrics (if enabled)
+                if self.live_session_id and self.live_enabled:
+                    live_open_pos = len([p for p in self.live_positions.values() if p.size > 0])
+                    live_exposure = sum(p.size for p in self.live_positions.values() if p.size > 0)
+                    await self.db.record_metrics(
+                        session_id=self.live_session_id,
+                        cumulative_pnl=self.live_total_pnl,
+                        trades_today=self.live_trade_count,
+                        win_rate_today=self.live_win_count / max(1, self.live_trade_count),
+                        open_positions=live_open_pos,
+                        total_exposure=live_exposure,
+                        active_markets=len(self.markets),
+                        markets_data=markets_data
+                    )
             except Exception as e:
                 logger.error(f"Metrics recording failed: {e}")
 
@@ -721,15 +787,31 @@ class TradingWorker:
             await asyncio.sleep(seconds_until_midnight)
 
             try:
-                stats = await self.db.get_session_stats(self.session_id)
-                await self.discord.send_daily_summary(
-                    pnl=stats["total_pnl"],
-                    trades=stats["total_trades"],
-                    win_rate=stats["win_rate"],
-                    best_trade=stats["best_trade"],
-                    worst_trade=stats["worst_trade"],
-                    exposure_pct=0  # TODO: Calculate
-                )
+                # Send paper summary
+                if self.paper_session_id:
+                    paper_stats = await self.db.get_session_stats(self.paper_session_id)
+                    await self.discord.send_daily_summary(
+                        pnl=paper_stats["total_pnl"],
+                        trades=paper_stats["total_trades"],
+                        win_rate=paper_stats["win_rate"],
+                        best_trade=paper_stats["best_trade"],
+                        worst_trade=paper_stats["worst_trade"],
+                        exposure_pct=0,
+                        mode="PAPER"
+                    )
+
+                # Send live summary (if enabled)
+                if self.live_session_id and self.live_enabled:
+                    live_stats = await self.db.get_session_stats(self.live_session_id)
+                    await self.discord.send_daily_summary(
+                        pnl=live_stats["total_pnl"],
+                        trades=live_stats["total_trades"],
+                        win_rate=live_stats["win_rate"],
+                        best_trade=live_stats["best_trade"],
+                        worst_trade=live_stats["worst_trade"],
+                        exposure_pct=0,
+                        mode="LIVE"
+                    )
             except Exception as e:
                 logger.error(f"Daily summary failed: {e}")
 
@@ -751,6 +833,10 @@ class TradingWorker:
                 asyncio.create_task(self._daily_summary_loop()),
             ]
 
+            # Add profit monitor if enabled
+            if self.profit_transfer_enabled and self.profit_monitor:
+                stream_tasks.append(asyncio.create_task(self.profit_monitor.start()))
+
             last_refresh = datetime.now(timezone.utc)
             last_status = datetime.now(timezone.utc)
 
@@ -762,10 +848,17 @@ class TradingWorker:
                     await self.refresh_markets()
                     last_refresh = now
 
-                # Log status every 60s
+                # Log status every 60s (separate paper and live - NO combining)
                 if (now - last_status).total_seconds() > 60:
-                    win_rate = self.win_count / max(1, self.trade_count)
-                    logger.info(f"Status: PnL=${self.total_pnl:.2f} | Trades={self.trade_count} | Win={win_rate*100:.0f}%")
+                    paper_wr = self.paper_win_count / max(1, self.paper_trade_count)
+                    if self.dual_mode or self.live_enabled:
+                        live_wr = self.live_win_count / max(1, self.live_trade_count)
+                        logger.info(
+                            f"Status [DUAL]: Paper PnL=${self.paper_total_pnl:.2f} (trades={self.paper_trade_count}, win={paper_wr*100:.0f}%) | "
+                            f"Live PnL=${self.live_total_pnl:.2f} (trades={self.live_trade_count}, win={live_wr*100:.0f}%)"
+                        )
+                    else:
+                        logger.info(f"Status: PnL=${self.paper_total_pnl:.2f} | Trades={self.paper_trade_count} | Win={paper_wr*100:.0f}%")
                     last_status = now
 
                 # Process each market
@@ -817,6 +910,11 @@ class TradingWorker:
         self.price_streamer.stop()
         self.futures_streamer.stop()
 
+        # Stop profit monitor
+        if self.profit_monitor:
+            self.profit_monitor.stop()
+
+
         # Cancel background tasks
         for task in tasks:
             task.cancel()
@@ -827,12 +925,16 @@ class TradingWorker:
         except Exception as e:
             logger.error(f"Final checkpoint failed: {e}")
 
-        # Mark session as stopped
-        if self.session_id:
-            try:
-                await self.db.end_session(self.session_id, "stopped")
-            except Exception as e:
-                logger.error(f"Failed to end session: {e}")
+        # Mark sessions as stopped (both paper and live)
+        try:
+            if self.paper_session_id:
+                await self.db.end_session(self.paper_session_id, "stopped")
+                logger.info("[PAPER] Session ended")
+            if self.live_session_id:
+                await self.db.end_session(self.live_session_id, "stopped")
+                logger.info("[LIVE] Session ended")
+        except Exception as e:
+            logger.error(f"Failed to end sessions: {e}")
 
         # Close connections
         await self.db.close()

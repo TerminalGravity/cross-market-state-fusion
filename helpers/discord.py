@@ -333,6 +333,49 @@ class DiscordWebhook:
 
         return await self._send(embed)
 
+    async def send_profit_transfer(
+        self,
+        amount: float,
+        tx_hash: str,
+        gas_used: int
+    ) -> bool:
+        """
+        Send profit transfer success notification.
+
+        Args:
+            amount: Transfer amount in dollars
+            tx_hash: Polygon transaction hash
+            gas_used: Gas units consumed
+
+        Returns:
+            True if sent successfully
+        """
+        # Polygon block explorer link
+        explorer_url = f"https://polygonscan.com/tx/{tx_hash}"
+
+        # Calculate approximate gas cost (assuming ~30 gwei and 0.50 MATIC/USD)
+        gas_cost_matic = (gas_used * 30e9) / 1e18  # Convert to MATIC
+        gas_cost_usd = gas_cost_matic * 0.50  # Rough MATIC price
+
+        embed = {
+            "title": "✅ Profit Transfer Complete",
+            "color": 0x2ecc71,  # Green
+            "description": f"Successfully transferred ${amount:.2f} USDC to cold wallet",
+            "fields": [
+                {"name": "Amount", "value": f"${amount:.2f} USDC", "inline": True},
+                {"name": "Gas Used", "value": f"{gas_used:,} units", "inline": True},
+                {"name": "Gas Cost", "value": f"~${gas_cost_usd:.3f}", "inline": True},
+                {
+                    "name": "Transaction",
+                    "value": f"[View on PolygonScan]({explorer_url})",
+                    "inline": False
+                },
+            ],
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+        return await self._send(embed)
+
 
 # Global webhook instance
 _webhook: Optional[DiscordWebhook] = None
