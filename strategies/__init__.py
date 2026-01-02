@@ -12,8 +12,13 @@ from .random_strat import RandomStrategy
 from .mean_revert import MeanRevertStrategy
 from .momentum import MomentumStrategy
 from .fade_spike import FadeSpikeStrategy
-from .rl_mlx import RLStrategy  # MLX-based PPO with proper autograd
 from .gating import GatingStrategy
+
+# Conditional import: MLX on macOS, NumPy on Linux
+try:
+    from .rl_mlx import RLStrategy  # MLX-based PPO with proper autograd
+except ImportError:
+    from .rl_numpy import NumpyRLStrategy as RLStrategy  # NumPy inference for Linux
 
 
 AVAILABLE_STRATEGIES = [
