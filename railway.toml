@@ -8,8 +8,8 @@ buildCommand = "pip install -r requirements-railway.txt"
 [deploy]
 startCommand = "python railway_worker.py"
 
-# Deploy to EU (Netherlands) to avoid Binance US geo-blocking
-region = "eu-west"
+# Deploy to Singapore for Binance Asia servers
+region = "asia-southeast1"
 
 # Restart policy
 restartPolicyType = "ON_FAILURE"

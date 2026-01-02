@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 PPO (Proximal Policy Optimization) agent that paper trades Polymarket's 15-minute binary crypto markets by exploiting information lag between fast markets (Binance futures) and slow markets (Polymarket). Trades 4 concurrent markets (BTC, ETH, SOL, XRP) with a single shared policy network.
 
-**Status**: Paper trading only - live market data, simulated trades.
+**Status**: Paper trading by default. Live execution available via py-clob-client.
 
 ## Commands
 
@@ -33,6 +33,18 @@ python dashboard.py --port 5001
 
 # Trade analysis
 python analyze_trades.py logs/trades_YYYYMMDD_HHMMSS.csv
+
+# Terminal UI (paper trading)
+python terminal_ui.py
+
+# Terminal UI (live trading - requires .env)
+python terminal_ui.py --live
+
+# Terminal UI with custom signals
+python terminal_ui.py --entry-low 0.10 --entry-high 0.25 --tp 0.30 --sl 0.05
+
+# Single asset focus
+python terminal_ui.py --asset BTC
 ```
 
 ## Architecture
@@ -53,6 +65,8 @@ Polymarket CLOB WSS ──┘
 - **helpers/orderbook_wss.py**: `OrderbookStreamer` - Polymarket CLOB bid/ask, imbalance metrics
 - **helpers/polymarket_api.py**: Market discovery via Gamma API (finds active 15-min markets)
 - **helpers/training_logger.py**: CSV logging for trades, PPO updates, episodes
+- **helpers/clob_executor.py**: Live order execution via py-clob-client (PAPER/LIVE modes)
+- **terminal_ui.py**: Rich terminal UI with orderbook depth, signal module, entry/TP/SL
 
 ### State Space (18 dimensions)
 | Category | Features |
@@ -94,6 +108,20 @@ Critic: 18 → 128 (tanh) → 128 (tanh) → 1
 - `rl_model.safetensors` / `rl_model_stats.npz`: Trained actor/critic weights and reward normalization stats
 - `logs/trades_*.csv`: Trade records (entry/exit prices, PnL, duration)
 - `logs/updates_*.csv`: PPO metrics per update (losses, entropy, KL)
+
+## Live Trading Setup
+
+1. Copy `.env.example` to `.env`
+2. Add your private key and funder address
+3. For EOA wallets: Set token allowances (one-time, see .env.example)
+4. Run: `python terminal_ui.py --live`
+
+```bash
+# Environment variables for live trading
+POLYMARKET_PRIVATE_KEY=your_key_here
+POLYMARKET_FUNDER_ADDRESS=0xYourAddress
+POLYMARKET_SIGNATURE_TYPE=0  # 0=EOA, 1=Email/Magic, 2=Browser
+```
 
 ## Debugging
 

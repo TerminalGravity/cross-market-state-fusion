@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque
 
-BINANCE_FUTURES_API = "https://fapi.binance.com"
-BINANCE_FUTURES_WSS = "wss://fstream.binance.com"
+# Use Asian regional servers for better datacenter IP tolerance
+BINANCE_FUTURES_API = "https://fapi1.binance.com"  # Asia endpoint
+BINANCE_FUTURES_WSS = "wss://fstream1.binance.com"  # Asia WSS endpoint
 
 # Asset to futures symbol mapping
 FUTURES_SYMBOLS = {

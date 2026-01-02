@@ -1,0 +1,421 @@
+[2026-01-01 23:21:55] 
+============================================================
+[2026-01-01 23:21:55] Paper Trading Session Started
+[2026-01-01 23:21:55] Trade Size: $50.0
+[2026-01-01 23:21:55] ============================================================
+[2026-01-01 23:21:57] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:22:21] 📈 BUY ETH UP @ 77.5% | $25.00 | conf=0%
+[2026-01-01 23:22:21]    Probs: HOLD=34.9% BUY=35.0% SELL=30.1%
+[2026-01-01 23:22:24] 📈 BUY BTC UP @ 77.5% | $25.00 | conf=2%
+[2026-01-01 23:22:24]    Probs: HOLD=34.8% BUY=36.7% SELL=28.5%
+[2026-01-01 23:22:29] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:22:35] 📉 SELL ETH @ 80.5% | PnL: +$0.97 | 14s
+[2026-01-01 23:22:35]    Total PnL: $0.97 | Trades: 2 | Win: 50%
+[2026-01-01 23:22:38] 📈 BUY ETH UP @ 79.5% | $25.00 | conf=1%
+[2026-01-01 23:22:38]    Probs: HOLD=33.6% BUY=34.9% SELL=31.5%
+[2026-01-01 23:22:39] 📉 SELL ETH @ 79.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:22:39]    Total PnL: $0.97 | Trades: 3 | Win: 33%
+[2026-01-01 23:22:39] 📈 BUY ETH UP @ 79.5% | $25.00 | conf=3%
+[2026-01-01 23:22:39]    Probs: HOLD=32.7% BUY=35.4% SELL=31.9%
+[2026-01-01 23:22:40] 📉 SELL ETH @ 79.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:22:40]    Total PnL: $0.97 | Trades: 4 | Win: 25%
+[2026-01-01 23:22:40] 📈 BUY ETH UP @ 79.5% | $25.00 | conf=4%
+[2026-01-01 23:22:40]    Probs: HOLD=32.2% BUY=36.0% SELL=31.8%
+[2026-01-01 23:22:41] 📉 SELL ETH @ 79.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:22:41]    Total PnL: $0.97 | Trades: 5 | Win: 20%
+[2026-01-01 23:22:41] 📈 BUY ETH UP @ 79.5% | $25.00 | conf=4%
+[2026-01-01 23:22:41]    Probs: HOLD=32.1% BUY=36.3% SELL=31.6%
+[2026-01-01 23:22:42] 📉 SELL ETH @ 79.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:22:42]    Total PnL: $0.97 | Trades: 6 | Win: 17%
+[2026-01-01 23:22:42] 📈 BUY ETH UP @ 79.5% | $25.00 | conf=5%
+[2026-01-01 23:22:42]    Probs: HOLD=32.1% BUY=36.7% SELL=31.2%
+[2026-01-01 23:22:44] 📉 SELL ETH @ 80.0% | PnL: +$0.16 | 2s
+[2026-01-01 23:22:44]    Total PnL: $1.12 | Trades: 7 | Win: 29%
+[2026-01-01 23:22:44] 📈 BUY ETH UP @ 80.0% | $25.00 | conf=2%
+[2026-01-01 23:22:44]    Probs: HOLD=33.5% BUY=35.2% SELL=31.3%
+[2026-01-01 23:22:50] 📉 SELL ETH @ 80.0% | PnL: +$0.00 | 6s
+[2026-01-01 23:22:50]    Total PnL: $1.12 | Trades: 8 | Win: 25%
+[2026-01-01 23:22:50] 📉 SELL BTC @ 78.0% | PnL: +$0.16 | 26s
+[2026-01-01 23:22:50]    Total PnL: $1.29 | Trades: 8 | Win: 38%
+[2026-01-01 23:22:55] 📈 BUY ETH UP @ 79.0% | $25.00 | conf=7%
+[2026-01-01 23:22:55]    Probs: HOLD=32.3% BUY=39.4% SELL=28.2%
+[2026-01-01 23:23:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:23:00] 📊 Status: PnL=$1.29 | Trades=9 | Win=33%
+[2026-01-01 23:23:14] 📈 BUY BTC UP @ 85.5% | $25.00 | conf=4%
+[2026-01-01 23:23:14]    Probs: HOLD=33.9% BUY=37.6% SELL=28.5%
+[2026-01-01 23:23:14] 📈 BUY XRP UP @ 61.5% | $25.00 | conf=2%
+[2026-01-01 23:23:14]    Probs: HOLD=34.3% BUY=36.8% SELL=28.9%
+[2026-01-01 23:23:14] 📉 SELL ETH @ 82.5% | PnL: +$1.11 | 19s
+[2026-01-01 23:23:14]    Total PnL: $2.39 | Trades: 11 | Win: 36%
+[2026-01-01 23:23:15] 📈 BUY ETH UP @ 82.5% | $25.00 | conf=1%
+[2026-01-01 23:23:15]    Probs: HOLD=33.0% BUY=34.5% SELL=32.6%
+[2026-01-01 23:23:15] 📉 SELL ETH @ 82.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:15]    Total PnL: $2.39 | Trades: 12 | Win: 33%
+[2026-01-01 23:23:16] 📉 SELL BTC @ 86.5% | PnL: +$0.29 | 2s
+[2026-01-01 23:23:16]    Total PnL: $2.69 | Trades: 12 | Win: 42%
+[2026-01-01 23:23:16] 📉 SELL XRP @ 38.5% | PnL: -$9.35 | 2s
+[2026-01-01 23:23:16]    Total PnL: $-6.66 | Trades: 12 | Win: 42%
+[2026-01-01 23:23:16] 📈 BUY BTC UP @ 86.5% | $25.00 | conf=0%
+[2026-01-01 23:23:16]    Probs: HOLD=33.9% BUY=34.3% SELL=31.8%
+[2026-01-01 23:23:17] 📉 SELL BTC @ 86.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:17]    Total PnL: $-6.66 | Trades: 13 | Win: 38%
+[2026-01-01 23:23:17] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=0%
+[2026-01-01 23:23:17]    Probs: HOLD=33.3% BUY=33.8% SELL=33.0%
+[2026-01-01 23:23:17] 📈 BUY BTC UP @ 85.5% | $25.00 | conf=3%
+[2026-01-01 23:23:17]    Probs: HOLD=34.4% BUY=37.6% SELL=28.0%
+[2026-01-01 23:23:17] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:17]    Total PnL: $-6.66 | Trades: 15 | Win: 33%
+[2026-01-01 23:23:18] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=1%
+[2026-01-01 23:23:18]    Probs: HOLD=33.2% BUY=33.9% SELL=32.9%
+[2026-01-01 23:23:18] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:18]    Total PnL: $-6.66 | Trades: 16 | Win: 31%
+[2026-01-01 23:23:18] 📈 BUY XRP UP @ 42.5% | $25.00 | conf=7%
+[2026-01-01 23:23:18]    Probs: HOLD=32.2% BUY=39.6% SELL=28.3%
+[2026-01-01 23:23:19] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=1%
+[2026-01-01 23:23:19]    Probs: HOLD=33.1% BUY=34.3% SELL=32.6%
+[2026-01-01 23:23:19] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:19]    Total PnL: $-6.66 | Trades: 18 | Win: 28%
+[2026-01-01 23:23:19] 📉 SELL XRP @ 41.0% | PnL: -$0.88 | 1s
+[2026-01-01 23:23:19]    Total PnL: $-7.55 | Trades: 18 | Win: 28%
+[2026-01-01 23:23:20] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=1%
+[2026-01-01 23:23:20]    Probs: HOLD=33.0% BUY=34.4% SELL=32.5%
+[2026-01-01 23:23:20] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:20]    Total PnL: $-7.55 | Trades: 19 | Win: 26%
+[2026-01-01 23:23:21] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=2%
+[2026-01-01 23:23:21]    Probs: HOLD=33.0% BUY=34.7% SELL=32.3%
+[2026-01-01 23:23:21] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:21]    Total PnL: $-7.55 | Trades: 20 | Win: 25%
+[2026-01-01 23:23:21] 📈 BUY SOL UP @ 48.5% | $25.00 | conf=0%
+[2026-01-01 23:23:21]    Probs: HOLD=34.0% BUY=34.3% SELL=31.7%
+[2026-01-01 23:23:22] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=2%
+[2026-01-01 23:23:22]    Probs: HOLD=32.9% BUY=35.2% SELL=31.9%
+[2026-01-01 23:23:22] 📉 SELL SOL @ 48.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:22]    Total PnL: $-7.55 | Trades: 22 | Win: 23%
+[2026-01-01 23:23:22] 📉 SELL ETH @ 81.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:23:22]    Total PnL: $-7.55 | Trades: 22 | Win: 23%
+[2026-01-01 23:23:22] 📈 BUY SOL UP @ 48.5% | $25.00 | conf=1%
+[2026-01-01 23:23:22]    Probs: HOLD=33.9% BUY=34.5% SELL=31.6%
+[2026-01-01 23:23:23] 📈 BUY ETH UP @ 81.0% | $25.00 | conf=3%
+[2026-01-01 23:23:23]    Probs: HOLD=32.7% BUY=36.0% SELL=31.3%
+[2026-01-01 23:23:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:23:31] 📉 SELL SOL @ 65.0% | PnL: +$8.51 | 9s
+[2026-01-01 23:23:31]    Total PnL: $0.96 | Trades: 24 | Win: 25%
+[2026-01-01 23:23:55] 📉 SELL BTC @ 93.5% | PnL: +$2.34 | 38s
+[2026-01-01 23:23:55]    Total PnL: $3.30 | Trades: 24 | Win: 29%
+[2026-01-01 23:23:55] 📉 SELL ETH @ 91.5% | PnL: +$3.24 | 32s
+[2026-01-01 23:23:55]    Total PnL: $6.54 | Trades: 24 | Win: 33%
+[2026-01-01 23:23:56] 📈 BUY BTC UP @ 93.0% | $25.00 | conf=12%
+[2026-01-01 23:23:56]    Probs: HOLD=33.3% BUY=45.2% SELL=21.5%
+[2026-01-01 23:23:56] 📈 BUY ETH UP @ 91.5% | $25.00 | conf=12%
+[2026-01-01 23:23:56]    Probs: HOLD=32.9% BUY=44.8% SELL=22.4%
+[2026-01-01 23:23:56] 📈 BUY XRP UP @ 65.5% | $25.00 | conf=0%
+[2026-01-01 23:23:56]    Probs: HOLD=33.0% BUY=33.6% SELL=33.5%
+[2026-01-01 23:23:57] 📉 SELL XRP @ 64.0% | PnL: -$0.57 | 1s
+[2026-01-01 23:23:57]    Total PnL: $5.97 | Trades: 27 | Win: 30%
+[2026-01-01 23:23:58] 📊 Status: PnL=$5.97 | Trades=27 | Win=30%
+[2026-01-01 23:23:58] 📈 BUY XRP UP @ 65.0% | $25.00 | conf=5%
+[2026-01-01 23:23:58]    Probs: HOLD=32.7% BUY=37.6% SELL=29.7%
+[2026-01-01 23:24:01] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:24:02] 📈 BUY SOL UP @ 75.5% | $25.00 | conf=2%
+[2026-01-01 23:24:02]    Probs: HOLD=33.5% BUY=35.2% SELL=31.3%
+[2026-01-01 23:24:02] 📉 SELL SOL @ 75.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:02]    Total PnL: $5.97 | Trades: 29 | Win: 28%
+[2026-01-01 23:24:03] 📈 BUY SOL UP @ 75.5% | $25.00 | conf=2%
+[2026-01-01 23:24:03]    Probs: HOLD=33.4% BUY=35.5% SELL=31.2%
+[2026-01-01 23:24:03] 📉 SELL SOL @ 75.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:03]    Total PnL: $5.97 | Trades: 30 | Win: 27%
+[2026-01-01 23:24:03] 📉 SELL XRP @ 61.5% | PnL: -$1.35 | 5s
+[2026-01-01 23:24:03]    Total PnL: $4.62 | Trades: 30 | Win: 27%
+[2026-01-01 23:24:04] 📈 BUY SOL UP @ 75.5% | $25.00 | conf=2%
+[2026-01-01 23:24:04]    Probs: HOLD=33.3% BUY=35.6% SELL=31.0%
+[2026-01-01 23:24:04] 📉 SELL SOL @ 75.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:04]    Total PnL: $4.62 | Trades: 31 | Win: 26%
+[2026-01-01 23:24:16] 📉 SELL BTC @ 96.5% | PnL: +$0.94 | 21s
+[2026-01-01 23:24:16]    Total PnL: $5.56 | Trades: 31 | Win: 29%
+[2026-01-01 23:24:16] 📉 SELL ETH @ 95.5% | PnL: +$1.09 | 21s
+[2026-01-01 23:24:16]    Total PnL: $6.65 | Trades: 31 | Win: 32%
+[2026-01-01 23:24:17] 📈 BUY BTC UP @ 93.5% | $25.00 | conf=6%
+[2026-01-01 23:24:17]    Probs: HOLD=32.9% BUY=38.8% SELL=28.3%
+[2026-01-01 23:24:17] 📈 BUY ETH UP @ 95.5% | $25.00 | conf=5%
+[2026-01-01 23:24:17]    Probs: HOLD=31.8% BUY=36.6% SELL=31.6%
+[2026-01-01 23:24:19] 📈 BUY XRP UP @ 62.5% | $25.00 | conf=0%
+[2026-01-01 23:24:19]    Probs: HOLD=34.5% BUY=34.7% SELL=30.9%
+[2026-01-01 23:24:20] 📉 SELL ETH @ 94.5% | PnL: -$0.26 | 3s
+[2026-01-01 23:24:20]    Total PnL: $6.39 | Trades: 34 | Win: 29%
+[2026-01-01 23:24:20] 📈 BUY ETH UP @ 94.5% | $25.00 | conf=2%
+[2026-01-01 23:24:20]    Probs: HOLD=32.6% BUY=35.1% SELL=32.4%
+[2026-01-01 23:24:21] 📉 SELL ETH @ 94.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:21]    Total PnL: $6.39 | Trades: 35 | Win: 29%
+[2026-01-01 23:24:21] 📈 BUY ETH UP @ 94.5% | $25.00 | conf=3%
+[2026-01-01 23:24:21]    Probs: HOLD=32.5% BUY=35.5% SELL=32.0%
+[2026-01-01 23:24:22] 📉 SELL ETH @ 94.5% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:22]    Total PnL: $6.39 | Trades: 36 | Win: 28%
+[2026-01-01 23:24:22] 📈 BUY ETH UP @ 94.5% | $25.00 | conf=7%
+[2026-01-01 23:24:22]    Probs: HOLD=32.7% BUY=39.4% SELL=27.9%
+[2026-01-01 23:24:24] 📉 SELL XRP @ 64.0% | PnL: +$0.60 | 5s
+[2026-01-01 23:24:24]    Total PnL: $6.99 | Trades: 37 | Win: 30%
+[2026-01-01 23:24:34] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:24:34] 📉 SELL BTC @ 93.5% | PnL: +$0.00 | 17s
+[2026-01-01 23:24:34]    Total PnL: $6.99 | Trades: 37 | Win: 30%
+[2026-01-01 23:24:34] 📉 SELL ETH @ 95.0% | PnL: +$0.13 | 12s
+[2026-01-01 23:24:34]    Total PnL: $7.12 | Trades: 37 | Win: 32%
+[2026-01-01 23:24:35] 📈 BUY ETH UP @ 95.0% | $25.00 | conf=3%
+[2026-01-01 23:24:35]    Probs: HOLD=32.0% BUY=35.3% SELL=32.7%
+[2026-01-01 23:24:35] 📉 SELL ETH @ 95.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:35]    Total PnL: $7.12 | Trades: 38 | Win: 32%
+[2026-01-01 23:24:36] 📈 BUY ETH UP @ 95.0% | $25.00 | conf=3%
+[2026-01-01 23:24:36]    Probs: HOLD=31.9% BUY=35.6% SELL=32.5%
+[2026-01-01 23:24:36] 📉 SELL ETH @ 95.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:36]    Total PnL: $7.12 | Trades: 39 | Win: 31%
+[2026-01-01 23:24:37] 📈 BUY ETH UP @ 95.0% | $25.00 | conf=3%
+[2026-01-01 23:24:37]    Probs: HOLD=31.9% BUY=35.6% SELL=32.5%
+[2026-01-01 23:24:37] 📉 SELL ETH @ 95.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:37]    Total PnL: $7.12 | Trades: 40 | Win: 30%
+[2026-01-01 23:24:38] 📈 BUY BTC UP @ 95.0% | $25.00 | conf=1%
+[2026-01-01 23:24:38]    Probs: HOLD=33.1% BUY=34.1% SELL=32.8%
+[2026-01-01 23:24:38] 📈 BUY ETH UP @ 95.0% | $25.00 | conf=5%
+[2026-01-01 23:24:38]    Probs: HOLD=31.8% BUY=36.4% SELL=31.8%
+[2026-01-01 23:24:56] 📉 SELL BTC @ 96.5% | PnL: +$0.39 | 18s
+[2026-01-01 23:24:56]    Total PnL: $7.52 | Trades: 42 | Win: 31%
+[2026-01-01 23:24:56] 📉 SELL ETH @ 95.0% | PnL: +$0.00 | 18s
+[2026-01-01 23:24:56]    Total PnL: $7.52 | Trades: 42 | Win: 31%
+[2026-01-01 23:24:57] 📈 BUY BTC UP @ 95.5% | $25.00 | conf=2%
+[2026-01-01 23:24:57]    Probs: HOLD=33.9% BUY=35.7% SELL=30.4%
+[2026-01-01 23:24:57] 📈 BUY ETH UP @ 95.5% | $25.00 | conf=8%
+[2026-01-01 23:24:57]    Probs: HOLD=32.5% BUY=40.7% SELL=26.9%
+[2026-01-01 23:24:57] 📈 BUY XRP UP @ 69.0% | $25.00 | conf=0%
+[2026-01-01 23:24:57]    Probs: HOLD=33.8% BUY=34.1% SELL=32.1%
+[2026-01-01 23:24:57] 📉 SELL BTC @ 94.5% | PnL: -$0.26 | 1s
+[2026-01-01 23:24:57]    Total PnL: $7.26 | Trades: 45 | Win: 29%
+[2026-01-01 23:24:57] 📉 SELL XRP @ 69.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:24:57]    Total PnL: $7.26 | Trades: 45 | Win: 29%
+[2026-01-01 23:24:58] 📊 Status: PnL=$7.26 | Trades=45 | Win=29%
+[2026-01-01 23:25:00] 📈 BUY BTC UP @ 96.5% | $25.00 | conf=2%
+[2026-01-01 23:25:00]    Probs: HOLD=34.3% BUY=36.3% SELL=29.4%
+[2026-01-01 23:25:01] 📈 BUY XRP UP @ 69.0% | $25.00 | conf=3%
+[2026-01-01 23:25:01]    Probs: HOLD=33.3% BUY=36.7% SELL=30.0%
+[2026-01-01 23:25:04] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:25:05] 📉 SELL XRP @ 77.0% | PnL: +$2.90 | 4s
+[2026-01-01 23:25:05]    Total PnL: $10.16 | Trades: 47 | Win: 30%
+[2026-01-01 23:25:05] 📈 BUY XRP UP @ 77.0% | $25.00 | conf=2%
+[2026-01-01 23:25:05]    Probs: HOLD=33.3% BUY=35.0% SELL=31.6%
+[2026-01-01 23:25:06] 📉 SELL XRP @ 77.0% | PnL: +$0.00 | 1s
+[2026-01-01 23:25:06]    Total PnL: $10.16 | Trades: 48 | Win: 29%
+[2026-01-01 23:25:18] 📉 SELL BTC @ 97.5% | PnL: +$0.26 | 18s
+[2026-01-01 23:25:18]    Total PnL: $10.42 | Trades: 48 | Win: 31%
+[2026-01-01 23:25:18] 📉 SELL ETH @ 96.0% | PnL: +$0.13 | 21s
+[2026-01-01 23:25:18]    Total PnL: $10.55 | Trades: 48 | Win: 33%
+[2026-01-01 23:25:19] 📈 BUY ETH UP @ 96.5% | $25.00 | conf=2%
+[2026-01-01 23:25:19]    Probs: HOLD=34.6% BUY=36.2% SELL=29.2%
+[2026-01-01 23:25:22] 📈 BUY XRP UP @ 63.0% | $25.00 | conf=1%
+[2026-01-01 23:25:22]    Probs: HOLD=33.4% BUY=34.2% SELL=32.4%
+[2026-01-01 23:25:22] 📉 SELL XRP @ 63.5% | PnL: +$0.20 | 1s
+[2026-01-01 23:25:22]    Total PnL: $10.74 | Trades: 50 | Win: 34%
+[2026-01-01 23:25:35] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:25:58] 📊 Status: PnL=$10.74 | Trades=50 | Win=34%
+[2026-01-01 23:26:05] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:26:15] 📈 BUY BTC UP @ 96.5% | $25.00 | conf=11%
+[2026-01-01 23:26:15]    Probs: HOLD=32.4% BUY=43.0% SELL=24.6%
+[2026-01-01 23:26:36] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:26:58] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:27:06] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:27:36] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:27:58] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:28:17] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:28:47] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:29:05] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:29:26] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:29:56] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:30:05] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:30:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:31:05] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:31:06] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:31:35] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:32:06] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:32:06] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:32:37] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:33:08] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:33:08] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:33:42] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:34:08] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:34:13] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:34:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:35:15] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:35:15] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:35:51] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:36:29] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:36:29] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:37:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:37:27] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:37:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:38:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:38:36] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:38:36] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:39:06] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:39:36] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:39:36] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:40:06] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:40:34] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:40:37] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:41:07] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:41:34] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:41:38] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:42:08] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:42:34] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:42:38] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:43:09] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:43:35] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:43:40] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:44:10] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:44:35] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:44:47] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:45:17] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:45:36] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:45:52] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:46:23] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:46:36] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:46:54] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:47:24] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:47:37] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:47:54] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:48:25] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:48:42] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:48:59] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:49:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:49:50] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:50:01] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:50:31] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:50:52] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:51:01] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:51:32] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:51:59] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:52:02] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:52:33] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:53:00] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:53:03] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:53:33] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:54:01] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:54:09] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:54:39] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:55:01] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:55:09] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:55:39] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:56:01] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:56:09] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:56:40] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:57:03] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:57:11] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:57:41] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:58:03] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:58:11] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:58:41] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:59:03] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-01 23:59:11] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-01 23:59:42] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:00:03] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:00:12] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:00:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:01:03] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:01:12] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:01:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:02:04] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:02:13] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:02:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:03:08] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:03:14] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:03:44] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:04:14] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:04:14] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:04:45] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:05:20] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:05:20] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:05:50] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:06:24] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:06:24] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:07:02] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:07:23] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:07:35] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:08:12] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:08:23] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:08:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:09:13] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:09:23] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:09:47] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:10:21] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:10:23] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:10:51] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:11:21] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:11:23] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:11:51] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:12:22] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:12:24] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:12:52] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:13:22] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:13:24] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:13:53] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:14:27] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:14:27] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:14:58] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:15:29] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:15:29] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:15:59] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:16:29] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:16:29] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:16:59] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:17:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:17:30] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:18:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:18:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:18:30] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:19:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:19:30] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:19:30] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:20:00] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:20:28] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:20:31] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:21:01] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:21:32] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:21:32] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:22:03] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:22:36] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:22:36] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:23:06] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:23:43] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:23:43] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:24:13] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:24:45] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:24:45] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:25:15] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:25:46] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:25:46] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:26:17] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:26:47] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:26:47] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:27:17] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:27:48] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:27:48] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:28:18] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:28:46] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:28:48] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:29:19] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:29:46] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:29:49] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:30:19] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:30:46] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:30:50] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:31:20] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:31:46] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:31:50] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:32:20] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:32:47] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:32:50] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:33:21] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:33:47] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:33:51] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:34:21] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:34:47] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:34:52] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:35:22] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:35:47] 📊 Status: PnL=$10.74 | Trades=51 | Win=33%
+[2026-01-02 00:35:52] Found 4 active markets: BTC, ETH, SOL, XRP
+[2026-01-02 00:36:23] Found 4 active markets: BTC, ETH, SOL, XRP

@@ -15,3 +15,7 @@ eventlet>=0.35.0
 
 # Utils
 python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Polymarket Trading (optional, for live execution)
+py-clob-client>=0.29.0
