@@ -45,6 +45,18 @@ python terminal_ui.py --entry-low 0.10 --entry-high 0.25 --tp 0.30 --sl 0.05
 
 # Single asset focus
 python terminal_ui.py --asset BTC
+
+# Fly.io worker with dual-mode (paper + live)
+python railway_worker.py
+
+# Profit transfer dry-run (test without sending transactions)
+PROFIT_TRANSFER_DRY_RUN=true python railway_worker.py
+
+# Fly.io deployment commands
+fly deploy                                     # Deploy worker
+fly logs -a cross-market-state-fusion          # View logs
+fly secrets list -a cross-market-state-fusion  # List secrets
+fly secrets set KEY=value -a cross-market-state-fusion  # Set secret
 ```
 
 ## Architecture
@@ -122,6 +134,67 @@ POLYMARKET_PRIVATE_KEY=your_key_here
 POLYMARKET_FUNDER_ADDRESS=0xYourAddress
 POLYMARKET_SIGNATURE_TYPE=0  # 0=EOA, 1=Email/Magic, 2=Browser
 ```
+
+### Profit Transfer System
+
+The profit transfer system automatically moves accumulated profits from the hot wallet to a cold wallet for security. It runs as a background task in the Fly.io worker (`railway_worker.py`).
+
+**Configuration** (`.env`):
+```bash
+# Cold wallet address (where profits are transferred)
+COLD_WALLET_ADDRESS=0xYourColdWalletAddressHere
+
+# Transfer triggers (hybrid mode)
+PROFIT_TRANSFER_THRESHOLD=100                # Transfer when profit >= $100
+PROFIT_TRANSFER_MAX_INTERVAL_HOURS=24       # OR after 24 hours
+
+# Polygon RPC endpoint (required for transfers)
+# Get free API key from https://alchemy.com → Create App → Polygon PoS
+POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_API_KEY
+
+# Safety limits
+MINIMUM_TRANSFER_AMOUNT=10                   # Don't transfer less than $10
+MAXIMUM_SINGLE_TRANSFER=10000                # Safety cap per transfer
+
+# Retry configuration
+MAX_TRANSFER_RETRIES=3                       # Retry failed transfers
+TRANSFER_RETRY_BACKOFF_SECONDS=60            # Initial backoff (60s → 120s → 240s)
+
+# Testing mode (set to 'false' for real transfers)
+PROFIT_TRANSFER_DRY_RUN=true                 # true = log only, false = real transfers
+```
+
+**How it works**:
+- Monitors balance every 60 seconds
+- Calculates available profit: `current_balance - initial_balance - open_positions`
+- Triggers transfer when: `profit >= threshold` OR `time >= max_interval_hours`
+- Keeps 100% of initial balance as working capital (only transfers profits)
+- Retries failed transfers with exponential backoff (60s → 120s → 240s)
+- All transfers logged to database `transfers` table for audit trail
+- Discord alerts sent on successful transfers with PolygonScan link
+
+**Testing**:
+1. Set `PROFIT_TRANSFER_DRY_RUN=true` in Fly.io secrets
+2. Deploy with `fly deploy -c fly.worker.toml`
+3. Watch logs with `fly logs -a cross-market-state-fusion`
+4. When confident, set `PROFIT_TRANSFER_DRY_RUN=false` for real transfers
+
+**Fly.io Deployment**:
+```bash
+# Set all secrets
+fly secrets set POLYMARKET_PRIVATE_KEY=xxx -a cross-market-state-fusion
+fly secrets set POLYMARKET_FUNDER_ADDRESS=0x... -a cross-market-state-fusion
+fly secrets set TRADING_MODE=live -a cross-market-state-fusion
+# ... (see .env.example for all required vars)
+
+# Deploy
+fly deploy -c fly.worker.toml
+
+# View logs
+fly logs -a cross-market-state-fusion
+```
+
+**IMPORTANT**: You need a Polygon RPC URL (not Ethereum mainnet). Polymarket operates on Polygon network.
 
 ## Debugging
 

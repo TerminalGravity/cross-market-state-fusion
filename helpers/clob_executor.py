@@ -45,6 +45,8 @@ class LiveOrder:
     avg_fill_price: float = 0.0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    execution_type: str = "paper"  # paper or live
+    clob_response: Optional[Dict] = None  # Full API response for audit
 
 
 @dataclass
@@ -166,14 +168,16 @@ class ClobExecutor:
             response = self.client.post_order(signed_order, OrderType.FOK)
 
             order = LiveOrder(
-                order_id=response.get("orderID", f"paper_{self.total_orders}"),
+                order_id=response.get("orderID", f"live_failed_{self.total_orders}"),
                 token_id=token_id,
                 side=side,
                 price=0.0,  # Market order, filled at market
                 size=amount,
                 order_type="FOK",
                 status=response.get("status", "UNKNOWN"),
-                filled_size=amount if response.get("status") == "matched" else 0.0
+                filled_size=amount if response.get("status") == "matched" else 0.0,
+                execution_type="live",
+                clob_response=response  # Store full response for audit
             )
 
             if order.status == "matched":
@@ -182,11 +186,23 @@ class ClobExecutor:
                 self._update_position(token_id, side, amount, 0.0, asset)
 
             self.orders[order.order_id] = order
-            print(f"[CLOB] Market {side.value} {amount:.2f} on {asset}: {order.status}")
+            print(f"[CLOB] LIVE Market {side.value} ${amount:.2f} on {asset}: {order.status} (order_id={order.order_id})")
             return order
 
         except Exception as e:
-            print(f"[CLOB] Order failed: {e}")
+            import traceback
+            print(f"[CLOB] LIVE Order failed: {e}")
+            print(f"[CLOB] Full error traceback:\n{traceback.format_exc()}")
+
+            # Try to extract error details from response
+            error_details = str(e)
+            if hasattr(e, 'response'):
+                try:
+                    error_details = f"{e} | Response: {e.response.json()}"
+                except:
+                    error_details = f"{e} | Response text: {getattr(e.response, 'text', 'N/A')}"
+
+            print(f"[CLOB] Error details: {error_details}")
             return None
 
     def place_limit_order(
@@ -247,7 +263,19 @@ class ClobExecutor:
             return order
 
         except Exception as e:
-            print(f"[CLOB] Order failed: {e}")
+            import traceback
+            print(f"[CLOB] Limit order failed: {e}")
+            print(f"[CLOB] Full error traceback:\n{traceback.format_exc()}")
+
+            # Try to extract error details from response
+            error_details = str(e)
+            if hasattr(e, 'response'):
+                try:
+                    error_details = f"{e} | Response: {e.response.json()}"
+                except:
+                    error_details = f"{e} | Response text: {getattr(e.response, 'text', 'N/A')}"
+
+            print(f"[CLOB] Error details: {error_details}")
             return None
 
     def cancel_order(self, order_id: str) -> bool:
@@ -315,7 +343,9 @@ class ClobExecutor:
             size=amount,
             order_type="FOK",
             status="matched",  # Paper orders always fill
-            filled_size=amount
+            filled_size=amount,
+            execution_type="paper",
+            clob_response=None  # No real API response for paper trades
         )
 
         self.filled_orders += 1
@@ -337,7 +367,9 @@ class ClobExecutor:
             price=price,
             size=size,
             order_type=order_type,
-            status="OPEN"  # Limit orders start as open
+            status="OPEN",  # Limit orders start as open
+            execution_type="paper",
+            clob_response=None  # No real API response for paper trades
         )
 
         self.orders[order.order_id] = order

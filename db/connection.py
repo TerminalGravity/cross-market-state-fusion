@@ -201,10 +201,30 @@ class Database:
         size_dollars: float,
         time_remaining: float,
         action_probs: Dict[str, float],
-        market_state: Dict[str, Any]
+        market_state: Dict[str, Any],
+        order_id: Optional[str] = None,
+        execution_type: str = "paper",
+        fill_status: Optional[str] = None,
+        clob_response: Optional[Dict] = None
     ) -> str:
         """
         Record a new trade entry.
+
+        Args:
+            session_id: Session UUID
+            condition_id: Polymarket condition ID
+            asset: Asset name (BTC, ETH, etc.)
+            entry_price: Entry price
+            entry_binance_price: Binance price at entry
+            side: Trade side (UP/DOWN)
+            size_dollars: Position size in dollars
+            time_remaining: Time remaining in market
+            action_probs: Model action probabilities
+            market_state: Full market state features
+            order_id: Polymarket CLOB order ID (for live trades)
+            execution_type: 'paper' or 'live'
+            fill_status: Order fill status (matched, rejected, etc.)
+            clob_response: Full CLOB API response for audit
 
         Returns:
             Trade UUID as string
@@ -214,13 +234,15 @@ class Database:
             INSERT INTO trades (
                 session_id, condition_id, asset, entry_time, entry_price,
                 entry_binance_price, side, size_dollars, shares,
-                time_remaining_at_entry, action_probs, market_state
-            ) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11)
+                time_remaining_at_entry, action_probs, market_state,
+                order_id, execution_type, fill_status, clob_response
+            ) VALUES ($1, $2, $3, NOW(), $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
             RETURNING id
         """,
             session_id, condition_id, asset, entry_price,
             entry_binance_price, side, size_dollars, shares,
-            time_remaining, action_probs, market_state
+            time_remaining, action_probs, market_state,
+            order_id, execution_type, fill_status, clob_response
         )
         return str(row["id"])
 
