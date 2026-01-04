@@ -28,6 +28,20 @@ import logging
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, asdict, field
 from typing import Dict, Optional, Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure residential proxy for Polymarket CLOB API (bypasses Cloudflare)
+# Only apply to CLOB requests - we'll handle this in clob_executor
+PROXY_URL = os.getenv("RESIDENTIAL_PROXY_URL")
+if PROXY_URL:
+    # Set for requests library (used by py-clob-client)
+    os.environ["HTTP_PROXY"] = PROXY_URL
+    os.environ["HTTPS_PROXY"] = PROXY_URL
+    print(f"[PROXY] Configured residential proxy: {PROXY_URL.split('@')[-1] if '@' in PROXY_URL else 'configured'}")
+
 import json
 
 import numpy as np
@@ -42,7 +56,7 @@ from helpers.orderbook_wss import OrderbookStreamer, OrderbookState
 from helpers.binance_wss import BinanceStreamer
 # Use OKX for futures data - datacenter-friendly (Binance blocks cloud IPs)
 from helpers.okx_futures import OKXFuturesStreamer as FuturesStreamer
-from helpers.clob_executor import create_executor
+from helpers.clob_executor import create_executor, OrderSide
 from strategies.base import MarketState, Action
 
 # Conditional import: Use NumPy on Linux, MLX on macOS
@@ -194,6 +208,16 @@ class TradingWorker:
 
         # Shared milestones
         self.milestones_hit = set()
+
+        # === SAFETY SYSTEMS ===
+        # Orderbook health tracking (last successful update per market)
+        self.orderbook_last_update: Dict[str, datetime] = {}
+        self.orderbook_stale_threshold = 60  # seconds without update = stale
+        self.system_healthy = True
+
+        # Position timeout settings
+        self.position_timeout_minutes = 2  # Force close 2 min before expiry
+        self.position_max_age_seconds = 840  # 14 minutes max (for 15-min markets)
 
         # Control
         self.running = False
@@ -598,7 +622,23 @@ class TradingWorker:
             amount = self.trade_size * 0.5
             binance_price = self.price_streamer.get_price(market.asset)
 
-            # Record to database
+            # *** CRITICAL: Actually execute the order on Polymarket ***
+            order = executor.place_market_order(
+                token_id=market.token_up,
+                amount=amount,
+                side=OrderSide.BUY,
+                asset=market.asset
+            )
+
+            # For live mode, verify order was successful
+            if mode == 'live' and (not order or order.status != "matched"):
+                logger.warning(
+                    f"[LIVE] Order failed for {market.asset}: "
+                    f"{order.status if order else 'no response'}"
+                )
+                return  # Don't record failed trades
+
+            # Record to database with order tracking
             trade_id = await self.db.record_trade_open(
                 session_id=session_id,
                 condition_id=cid,
@@ -609,7 +649,11 @@ class TradingWorker:
                 size_dollars=amount,
                 time_remaining=state.time_remaining,
                 action_probs={"hold": float(probs[0]), "buy": float(probs[1]), "sell": float(probs[2])},
-                market_state={"prob": state.prob, "spread": state.spread, "imbalance_l1": state.order_book_imbalance_l1}
+                market_state={"prob": state.prob, "spread": state.spread, "imbalance_l1": state.order_book_imbalance_l1},
+                order_id=order.order_id if order else None,
+                execution_type=order.execution_type if order else "paper",
+                fill_status=order.status if order else None,
+                clob_response=order.clob_response if order else None
             )
 
             # Update local state
@@ -659,6 +703,25 @@ class TradingWorker:
 
             duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
             binance_price = self.price_streamer.get_price(market.asset)
+
+            # *** CRITICAL: Actually execute the sell order on Polymarket ***
+            # Calculate shares to sell (amount / entry_price gives shares)
+            shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            if shares_to_sell > 0:
+                order = executor.place_market_order(
+                    token_id=pos.token_id,
+                    amount=shares_to_sell,  # For SELL, amount is shares
+                    side=OrderSide.SELL,
+                    asset=market.asset
+                )
+
+                # For live mode, verify order was successful
+                if mode == 'live' and (not order or order.status != "matched"):
+                    logger.warning(
+                        f"[LIVE] Sell order failed for {market.asset}: "
+                        f"{order.status if order else 'no response'}"
+                    )
+                    return  # Don't record failed trades
 
             # Record to database
             if pos.trade_id:
@@ -724,6 +787,301 @@ class TradingWorker:
             if self.paper_total_pnl >= m and m not in self.milestones_hit:
                 self.milestones_hit.add(m)
                 await self.discord.send_milestone(self.paper_total_pnl, m)
+
+    # === SAFETY SYSTEM METHODS ===
+
+    async def _position_safety_loop(self) -> None:
+        """
+        Background task: Check positions for timeout/expiry every 10 seconds.
+
+        CRITICAL SAFETY: This prevents positions from being held until market
+        expiration when orderbook data fails or system becomes unhealthy.
+        """
+        logger.info("[SAFETY] Position safety loop started")
+        while self.running:
+            await asyncio.sleep(10)
+            try:
+                now = datetime.now(timezone.utc)
+
+                # Count positions checked
+                live_checked = 0
+                live_closed = 0
+                paper_checked = 0
+                paper_closed = 0
+
+                # Check all live positions first (MOST IMPORTANT)
+                for cid, pos in list(self.live_positions.items()):
+                    if pos.size <= 0:
+                        continue
+
+                    live_checked += 1
+                    market = self.markets.get(cid)
+                    if not market:
+                        logger.warning(f"[SAFETY] LIVE {pos.asset}: Market not found (cid={cid[:8]}...)")
+                        continue
+
+                    # Check if position needs emergency close
+                    should_close, reason = self._should_emergency_close(pos, market, now)
+                    if should_close:
+                        logger.critical(f"[SAFETY] 🚨 TIMEOUT TRIGGERED: LIVE {pos.asset} - {reason}")
+                        live_closed += 1
+                        await self._emergency_close_position(
+                            cid, market, pos,
+                            mode='live',
+                            executor=self.live_executor,
+                            positions=self.live_positions,
+                            session_id=self.live_session_id,
+                            reason=reason
+                        )
+                    else:
+                        # Log healthy state periodically (every minute)
+                        if int(now.timestamp()) % 60 < 10:
+                            time_to_expiry = (market.end_time - now).total_seconds()
+                            age = (now - pos.entry_time).total_seconds() if pos.entry_time else 0
+                            logger.debug(
+                                f"[SAFETY] LIVE {pos.asset} healthy: "
+                                f"T-{time_to_expiry/60:.1f}min to expiry, age={age:.0f}s"
+                            )
+
+                # Check paper positions
+                for cid, pos in list(self.paper_positions.items()):
+                    if pos.size <= 0:
+                        continue
+
+                    paper_checked += 1
+                    market = self.markets.get(cid)
+                    if not market:
+                        logger.warning(f"[SAFETY] PAPER {pos.asset}: Market not found (cid={cid[:8]}...)")
+                        continue
+
+                    should_close, reason = self._should_emergency_close(pos, market, now)
+                    if should_close:
+                        logger.warning(f"[SAFETY] TIMEOUT: PAPER {pos.asset} - {reason}")
+                        paper_closed += 1
+                        await self._emergency_close_position(
+                            cid, market, pos,
+                            mode='paper',
+                            executor=self.paper_executor,
+                            positions=self.paper_positions,
+                            session_id=self.paper_session_id,
+                            reason=reason
+                        )
+
+                # Check orderbook health
+                await self._check_orderbook_health()
+
+                # Log summary every minute
+                if live_checked > 0 or paper_checked > 0:
+                    if int(now.timestamp()) % 60 < 10:
+                        logger.info(
+                            f"[SAFETY] Checked {live_checked} LIVE + {paper_checked} PAPER positions | "
+                            f"Closed: {live_closed} LIVE + {paper_closed} PAPER"
+                        )
+
+            except Exception as e:
+                logger.error(f"[SAFETY] Position safety check error: {e}", exc_info=True)
+
+    def _should_emergency_close(
+        self,
+        pos: Position,
+        market: Market,
+        now: datetime
+    ) -> tuple[bool, str]:
+        """
+        Determine if a position should be emergency closed.
+
+        Returns: (should_close, reason)
+        """
+        # 1. Market expiry timeout (2 minutes before end)
+        time_to_expiry = (market.end_time - now).total_seconds()
+        if time_to_expiry < self.position_timeout_minutes * 60:
+            return True, f"market_expiry (expires in {time_to_expiry:.0f}s)"
+
+        # 2. Position age timeout (max 14 minutes for 15-min markets)
+        if pos.entry_time:
+            position_age = (now - pos.entry_time).total_seconds()
+            if position_age > self.position_max_age_seconds:
+                return True, f"max_age ({position_age:.0f}s > {self.position_max_age_seconds}s)"
+
+        # 3. System unhealthy (orderbook data stale for this market)
+        cid = pos.condition_id
+        if cid and cid in self.orderbook_last_update:
+            last_update = self.orderbook_last_update[cid]
+            staleness = (now - last_update).total_seconds()
+            if staleness > self.orderbook_stale_threshold:
+                return True, f"stale_data ({staleness:.0f}s without update)"
+
+        return False, ""
+
+    async def _emergency_close_position(
+        self,
+        cid: str,
+        market: Market,
+        pos: Position,
+        mode: str,
+        executor,
+        positions: Dict[str, Position],
+        session_id: str,
+        reason: str
+    ) -> None:
+        """
+        Emergency close a position at market price.
+
+        Called by safety system when position must be closed immediately.
+        """
+        try:
+            # Get current price (try orderbook first, fallback to entry price)
+            ob_up = self.orderbook_streamer.get_orderbook(cid, "UP")
+            exit_price = ob_up.mid_price if ob_up and ob_up.mid_price else pos.entry_price
+
+            # Calculate PnL
+            if pos.side == "UP":
+                pnl = (exit_price - pos.entry_price) * (pos.size / pos.entry_price)
+            else:
+                pnl = ((1 - exit_price) - pos.entry_price) * (pos.size / pos.entry_price)
+
+            duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
+            binance_price = self.price_streamer.get_price(market.asset)
+
+            # Execute the sell order
+            shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            if shares_to_sell > 0 and executor:
+                try:
+                    order = executor.place_market_order(
+                        token_id=pos.token_id,
+                        amount=shares_to_sell,
+                        side=OrderSide.SELL,
+                        asset=market.asset
+                    )
+                    logger.info(f"[{mode.upper()}] Emergency sell executed: {order.status if order else 'submitted'}")
+                except Exception as e:
+                    logger.error(f"[{mode.upper()}] Emergency sell order failed: {e}")
+                    # Continue anyway to update state - position expiring is worse than tracking error
+
+            # Record to database
+            if pos.trade_id:
+                await self.db.record_trade_close(
+                    trade_id=pos.trade_id,
+                    exit_price=exit_price,
+                    exit_binance_price=binance_price,
+                    exit_reason=f"emergency:{reason}",
+                    pnl=pnl,
+                    duration_seconds=duration
+                )
+
+            # Update stats
+            if mode == 'paper':
+                self.paper_total_pnl += pnl
+                if pnl > 0:
+                    self.paper_win_count += 1
+            else:
+                self.live_total_pnl += pnl
+                if pnl > 0:
+                    self.live_win_count += 1
+
+            logger.warning(
+                f"[{mode.upper()}] EMERGENCY CLOSE {market.asset} | reason={reason} | "
+                f"PnL: {'+'if pnl >= 0 else ''}{pnl:.2f}"
+            )
+
+            # Discord alert for emergency close
+            await self.discord.send_error(
+                message=f"⚠️ Emergency Position Close ({mode.upper()})",
+                details=(
+                    f"**Asset:** {market.asset}\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Entry:** {pos.entry_price*100:.1f}%\n"
+                    f"**Exit:** {exit_price*100:.1f}%\n"
+                    f"**PnL:** ${pnl:+.2f}\n"
+                    f"**Duration:** {duration}s"
+                )
+            )
+
+            # Clear position
+            positions[cid] = Position(asset=market.asset)
+
+        except Exception as e:
+            logger.error(f"[SAFETY] Emergency close failed for {market.asset}: {e}")
+            # Last resort: clear local state anyway to prevent double-close attempts
+            positions[cid] = Position(asset=market.asset)
+
+    async def _check_orderbook_health(self) -> None:
+        """
+        Check orderbook health across all markets.
+        Alert if system becomes unhealthy.
+        """
+        now = datetime.now(timezone.utc)
+        stale_markets = []
+
+        for cid in self.markets:
+            if cid in self.orderbook_last_update:
+                staleness = (now - self.orderbook_last_update[cid]).total_seconds()
+                if staleness > self.orderbook_stale_threshold:
+                    stale_markets.append(cid)
+
+        # Update system health
+        was_healthy = self.system_healthy
+        self.system_healthy = len(stale_markets) < len(self.markets) / 2  # <50% stale = healthy
+
+        # Alert on health state change
+        if was_healthy and not self.system_healthy:
+            logger.error(f"[SAFETY] System UNHEALTHY: {len(stale_markets)}/{len(self.markets)} markets stale")
+            await self.discord.send_error(
+                message="🚨 Trading System Unhealthy",
+                details=(
+                    f"**Stale Markets:** {len(stale_markets)}/{len(self.markets)}\n"
+                    f"**Threshold:** {self.orderbook_stale_threshold}s\n"
+                    f"**Action:** Emergency closing positions and pausing new trades"
+                )
+            )
+        elif not was_healthy and self.system_healthy:
+            logger.info(f"[SAFETY] System recovered: orderbook data restored")
+            await self.discord.send_startup(
+                mode="RECOVERED",
+                trade_size=self.trade_size,
+                model_version="System health restored"
+            )
+
+    def update_orderbook_health(self, cid: str) -> None:
+        """Mark orderbook as recently updated (called when we get valid data)."""
+        self.orderbook_last_update[cid] = datetime.now(timezone.utc)
+
+    async def emergency_close_all(self, reason: str = "manual") -> None:
+        """
+        Emergency close ALL open positions.
+        Called when system needs immediate shutdown or critical failure.
+        """
+        logger.warning(f"[SAFETY] EMERGENCY CLOSE ALL: {reason}")
+
+        # Close live positions first (real money)
+        if self.live_executor and self.live_session_id:
+            for cid, pos in list(self.live_positions.items()):
+                if pos.size > 0:
+                    market = self.markets.get(cid)
+                    if market:
+                        await self._emergency_close_position(
+                            cid, market, pos,
+                            mode='live',
+                            executor=self.live_executor,
+                            positions=self.live_positions,
+                            session_id=self.live_session_id,
+                            reason=reason
+                        )
+
+        # Then paper positions
+        if self.paper_session_id:
+            for cid, pos in list(self.paper_positions.items()):
+                if pos.size > 0:
+                    market = self.markets.get(cid)
+                    if market:
+                        await self._emergency_close_position(
+                            cid, market, pos,
+                            mode='paper',
+                            executor=self.paper_executor,
+                            positions=self.paper_positions,
+                            session_id=self.paper_session_id,
+                            reason=reason
+                        )
 
     async def _checkpoint_loop(self) -> None:
         """Background task: checkpoint every 30 seconds."""
@@ -832,6 +1190,7 @@ class TradingWorker:
                 asyncio.create_task(self._checkpoint_loop()),
                 asyncio.create_task(self._metrics_loop()),
                 asyncio.create_task(self._daily_summary_loop()),
+                asyncio.create_task(self._position_safety_loop()),  # CRITICAL: Position safety monitor
             ]
 
             # Add profit monitor if enabled
@@ -869,10 +1228,17 @@ class TradingWorker:
                         if not ob_up or not ob_up.mid_price:
                             continue
 
+                        # SAFETY: Mark orderbook as healthy for this market
+                        self.update_orderbook_health(cid)
+
                         state = self.update_market_state(cid, market, ob_up)
 
                         # Skip if market nearly expired
                         if state.time_remaining < 0.05:
+                            continue
+
+                        # SAFETY: Skip new trades if system unhealthy (but still allow closes)
+                        if not self.system_healthy:
                             continue
 
                         action, probs, confidence = self.get_rl_action(state)
@@ -906,6 +1272,12 @@ class TradingWorker:
         logger.info("Shutting down...")
         self.running = False
 
+        # SAFETY: Emergency close all open positions before shutdown
+        try:
+            await self.emergency_close_all(reason="shutdown")
+        except Exception as e:
+            logger.error(f"Emergency close on shutdown failed: {e}")
+
         # Stop streams
         self.orderbook_streamer.stop()
         self.price_streamer.stop()
@@ -914,7 +1286,6 @@ class TradingWorker:
         # Stop profit monitor
         if self.profit_monitor:
             self.profit_monitor.stop()
-
 
         # Cancel background tasks
         for task in tasks:
