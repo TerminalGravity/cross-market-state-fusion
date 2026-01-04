@@ -125,19 +125,19 @@ Fixes $17.18 loss from 2026-01-03 position expiry failure.
 Database migration 002 already applied."
 ```
 
-### Step 2: Deploy to Railway 🚨 REQUIRED
+### Step 2: Deploy to Fly.io 🚨 REQUIRED
 ```bash
-# Push to git
+# Push to git (if using CI/CD)
 git push origin master
 
-# Railway will auto-deploy OR manually deploy:
-railway up
+# OR deploy directly to Fly.io:
+fly deploy --config fly.worker.toml
 ```
 
 ### Step 3: Verify Deployment
 After deployment, check logs:
 ```bash
-railway logs | grep "\[SAFETY\]"
+fly logs --app cross-market-state-fusion | grep "\[SAFETY\]"
 
 # Expected output:
 [SAFETY] Position safety loop started
