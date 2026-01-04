@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(fly:*)",
+      "Bash(flyctl:*)",
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(uv:*)",
+      "Bash(pip:*)",
+      "WebFetch(domain:fly.io)",
+      "WebFetch(domain:polymarket.com)",
+      "WebFetch(domain:docs.polymarket.com)"
+    ],
+    "deny": []
+  },
+  "env": {
+    "FLY_APP": "cross-market-state-fusion"
+  }
+}

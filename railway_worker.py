@@ -432,6 +432,15 @@ class TradingWorker:
             logger.warning("No active markets found")
             return
 
+        # CRITICAL: Clean up stale tokens BEFORE updating markets
+        # Without this, expired market tokens accumulate and cause 404s
+        active_condition_ids = {m.condition_id for m in markets}
+        old_count = len(self.orderbook_streamer.orderbooks)
+        self.orderbook_streamer.clear_stale(active_condition_ids)
+        new_count = len(self.orderbook_streamer.orderbooks)
+        if old_count > new_count:
+            logger.info(f"[OB] Cleaned {old_count - new_count} stale orderbooks ({old_count} → {new_count})")
+
         self.markets = {m.condition_id: m for m in markets}
 
         for m in markets:

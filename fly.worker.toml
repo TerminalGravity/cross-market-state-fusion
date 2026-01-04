@@ -1,0 +1,23 @@
+app = "cross-market-state-fusion"  # Use existing Fly.io app
+primary_region = "sin"  # Singapore (closest to Asian crypto exchanges)
+
+[build]
+  dockerfile = "Dockerfile.worker"
+
+[env]
+  TRADING_MODE = "live"
+  DUAL_MODE = "true"
+  TRADE_SIZE = "10"
+  MODEL_PATH = "rl_model"
+
+# No HTTP service needed (background worker)
+# Fly.io will just run the container
+
+[metrics]
+  port = 9091  # Optional: add Prometheus metrics later
+  path = "/metrics"
+
+[[vm]]
+  memory = '512mb'
+  cpu_kind = 'shared'
+  cpus = 1

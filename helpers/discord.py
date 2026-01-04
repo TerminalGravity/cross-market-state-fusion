@@ -119,17 +119,29 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
-        color = 0x00ff00 if side == "UP" else 0xff0000  # Green for UP, red for DOWN
+        # Dynamic color based on side
+        color = 0x2ecc71 if side == "UP" else 0xe74c3c  # Brighter green/red
+
+        # Emoji indicators
+        side_emoji = "📈" if side == "UP" else "📉"
+        conf_emoji = "🔥" if confidence >= 0.15 else "⚡" if confidence >= 0.10 else "🎯"
+
+        # Confidence bar visualization
+        conf_bars = "█" * int(confidence * 50) + "░" * (10 - int(confidence * 50))
+
+        # Session PnL indicator
+        pnl_emoji = "💰" if session_pnl > 0 else "💸" if session_pnl < 0 else "💵"
 
         embed = {
-            "title": f"Trade Opened: {asset} {side}",
+            "title": f"{side_emoji} {asset} {side} Opened",
             "color": color,
+            "description": f"**{conf_emoji} Confidence: {confidence*100:.1f}%**\n`{conf_bars}`",
             "fields": [
-                {"name": "Entry", "value": f"{entry_price*100:.1f}%", "inline": True},
-                {"name": "Size", "value": f"${size:.2f}", "inline": True},
-                {"name": "Confidence", "value": f"{confidence*100:.0f}%", "inline": True},
-                {"name": "Session PnL", "value": f"${session_pnl:.2f}", "inline": True},
+                {"name": "📍 Entry Price", "value": f"**{entry_price*100:.1f}%**", "inline": True},
+                {"name": "💵 Position Size", "value": f"**${size:.2f}**", "inline": True},
+                {"name": f"{pnl_emoji} Session P&L", "value": f"**${session_pnl:+.2f}**", "inline": True},
             ],
+            "footer": {"text": f"🤖 RL Model • Live Trading"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -164,20 +176,53 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
-        color = 0x00ff00 if pnl >= 0 else 0xff0000
-        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+        # Dynamic color based on PnL magnitude
+        if pnl >= 2.0:
+            color = 0x27ae60  # Bright green for big wins
+        elif pnl >= 0:
+            color = 0x2ecc71  # Green for small wins
+        elif pnl >= -2.0:
+            color = 0xe67e22  # Orange for small losses
+        else:
+            color = 0xe74c3c  # Red for big losses
+
+        # Win/loss emoji
+        result_emoji = "✅" if pnl >= 0 else "❌"
+
+        # Calculate ROI percentage
+        size = abs(pnl / ((exit_price - entry_price) if exit_price != entry_price else 0.01))
+        roi_pct = (pnl / size * 100) if size > 0 else 0
+
+        # Format PnL with sign
+        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"${pnl:.2f}"
+
+        # Format duration (convert seconds to readable format)
+        if duration < 60:
+            duration_str = f"{duration}s"
+        elif duration < 3600:
+            duration_str = f"{duration // 60}m {duration % 60}s"
+        else:
+            duration_str = f"{duration // 3600}h {(duration % 3600) // 60}m"
+
+        # Win rate bar visualization
+        win_bars = "█" * int(session_win_rate * 10) + "░" * (10 - int(session_win_rate * 10))
+
+        # Session PnL emoji
+        session_emoji = "💰" if session_pnl > 0 else "💸" if session_pnl < 0 else "💵"
 
         embed = {
-            "title": f"Trade Closed: {asset} {side} | {pnl_str}",
+            "title": f"{result_emoji} {asset} {side} Closed | {pnl_str}",
             "color": color,
+            "description": f"**ROI: {roi_pct:+.1f}%** • Duration: {duration_str}",
             "fields": [
-                {"name": "PnL", "value": pnl_str, "inline": True},
-                {"name": "Duration", "value": f"{duration}s", "inline": True},
-                {"name": "Entry → Exit", "value": f"{entry_price*100:.1f}% → {exit_price*100:.1f}%", "inline": True},
-                {"name": "Session Total", "value": f"${session_pnl:.2f}", "inline": True},
-                {"name": "Trades", "value": str(session_trades), "inline": True},
-                {"name": "Win Rate", "value": f"{session_win_rate*100:.0f}%", "inline": True},
+                {"name": "💵 Trade P&L", "value": f"**{pnl_str}**", "inline": True},
+                {"name": "📊 Entry → Exit", "value": f"{entry_price*100:.1f}% → {exit_price*100:.1f}%", "inline": True},
+                {"name": f"{session_emoji} Session P&L", "value": f"**${session_pnl:+.2f}**", "inline": True},
+                {"name": "📈 Trades", "value": f"**{session_trades}**", "inline": True},
+                {"name": "🎯 Win Rate", "value": f"**{session_win_rate*100:.0f}%**\n`{win_bars}`", "inline": True},
+                {"name": "⏱️ Hold Time", "value": f"**{duration_str}**", "inline": True},
             ],
+            "footer": {"text": f"🤖 RL Model • {'🟢 Profitable' if pnl >= 0 else '🔴 Loss'}"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -206,20 +251,51 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
-        color = 0x00ff00 if pnl >= 0 else 0xff0000
-        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
+        # Dynamic color based on daily performance
+        if pnl >= 50:
+            color = 0xf1c40f  # Gold for great days
+        elif pnl >= 10:
+            color = 0x2ecc71  # Green for good days
+        elif pnl >= 0:
+            color = 0x3498db  # Blue for small wins
+        elif pnl >= -10:
+            color = 0xe67e22  # Orange for small losses
+        else:
+            color = 0xe74c3c  # Red for bad days
+
+        # Format PnL with sign
+        pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"${pnl:.2f}"
+
+        # Daily result emoji
+        if pnl >= 50:
+            result_emoji = "🏆"
+        elif pnl >= 10:
+            result_emoji = "💰"
+        elif pnl >= 0:
+            result_emoji = "✅"
+        else:
+            result_emoji = "📉"
+
+        # Win rate bar visualization
+        win_bars = "█" * int(win_rate * 10) + "░" * (10 - int(win_rate * 10))
+
+        # Win/loss count
+        wins = int(trades * win_rate)
+        losses = trades - wins
 
         embed = {
-            "title": f"Daily Summary | {pnl_str}",
+            "title": f"{result_emoji} Daily Summary | {pnl_str}",
             "color": color,
+            "description": f"**{wins}W - {losses}L** ({win_rate*100:.0f}% win rate)\n`{win_bars}`",
             "fields": [
-                {"name": "PnL", "value": pnl_str, "inline": True},
-                {"name": "Trades", "value": str(trades), "inline": True},
-                {"name": "Win Rate", "value": f"{win_rate*100:.0f}%", "inline": True},
-                {"name": "Best Trade", "value": f"${best_trade:.2f}", "inline": True},
-                {"name": "Worst Trade", "value": f"${worst_trade:.2f}", "inline": True},
-                {"name": "Exposure", "value": f"{exposure_pct:.0f}%", "inline": True},
+                {"name": "💵 Total P&L", "value": f"**{pnl_str}**", "inline": True},
+                {"name": "📊 Total Trades", "value": f"**{trades}**", "inline": True},
+                {"name": "📈 Avg Exposure", "value": f"**{exposure_pct:.0f}%**", "inline": True},
+                {"name": "🏆 Best Trade", "value": f"**+${best_trade:.2f}**", "inline": True},
+                {"name": "💸 Worst Trade", "value": f"**${worst_trade:.2f}**", "inline": True},
+                {"name": "📊 P&L Range", "value": f"**${abs(best_trade - worst_trade):.2f}**", "inline": True},
             ],
+            "footer": {"text": f"🤖 RL Model • End of Day Report"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -267,15 +343,30 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
+        # Color based on recovered PnL
+        if recovered_pnl > 0:
+            color = 0x2ecc71  # Green for profitable recovery
+        elif recovered_pnl < 0:
+            color = 0xe67e22  # Orange for loss recovery
+        else:
+            color = 0x3498db  # Blue for neutral
+
+        # PnL emoji
+        pnl_emoji = "💰" if recovered_pnl > 0 else "💸" if recovered_pnl < 0 else "💵"
+
+        # Format PnL with sign
+        pnl_str = f"+${recovered_pnl:.2f}" if recovered_pnl >= 0 else f"${recovered_pnl:.2f}"
+
         embed = {
-            "title": "Session Recovered",
-            "color": 0xffff00,  # Yellow
-            "description": f"Recovered session `{session_id[:8]}` after restart",
+            "title": "🔄 Session Recovered",
+            "color": color,
+            "description": f"Successfully recovered session after restart\n**Session ID:** `{session_id[:16]}...`",
             "fields": [
-                {"name": "Recovered PnL", "value": f"${recovered_pnl:.2f}", "inline": True},
-                {"name": "Trades", "value": str(recovered_trades), "inline": True},
-                {"name": "Open Positions", "value": str(open_positions), "inline": True},
+                {"name": f"{pnl_emoji} Recovered P&L", "value": f"**{pnl_str}**", "inline": True},
+                {"name": "📊 Trades", "value": f"**{recovered_trades}**", "inline": True},
+                {"name": "📈 Open Positions", "value": f"**{open_positions}**", "inline": True},
             ],
+            "footer": {"text": "🤖 RL Model • Resuming trading operations"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -298,16 +389,26 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
-        color = 0x3498db if mode == "paper" else 0x9b59b6
+        # Color and emoji based on mode
+        if mode == "live":
+            color = 0x9b59b6  # Purple for live
+            mode_emoji = "🚀"
+            mode_text = "LIVE TRADING"
+        else:
+            color = 0x3498db  # Blue for paper
+            mode_emoji = "📝"
+            mode_text = "PAPER TRADING"
 
         embed = {
-            "title": f"Trading Started ({mode.upper()})",
+            "title": f"{mode_emoji} Trading Bot Started",
             "color": color,
+            "description": f"**Mode: {mode_text}**\nBot is now actively monitoring markets",
             "fields": [
-                {"name": "Mode", "value": mode.upper(), "inline": True},
-                {"name": "Trade Size", "value": f"${trade_size:.2f}", "inline": True},
-                {"name": "Model", "value": model_version, "inline": True},
+                {"name": "💵 Trade Size", "value": f"**${trade_size:.2f}**", "inline": True},
+                {"name": "🤖 Model", "value": f"**{model_version}**", "inline": True},
+                {"name": "📊 Markets", "value": "**BTC, ETH, SOL, XRP**", "inline": True},
             ],
+            "footer": {"text": f"🤖 RL Model • {mode_text}"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
@@ -324,10 +425,31 @@ class DiscordWebhook:
         Returns:
             True if sent successfully
         """
+        # Celebratory emoji based on milestone size
+        if milestone >= 1000:
+            emoji = "🎊💰🎊"
+        elif milestone >= 500:
+            emoji = "🏆💎"
+        elif milestone >= 100:
+            emoji = "🎉💰"
+        else:
+            emoji = "✨"
+
+        # Progress bar to next milestone
+        next_milestone = milestone * 2
+        progress_pct = min((pnl - milestone) / (next_milestone - milestone), 1.0)
+        progress_bars = "█" * int(progress_pct * 10) + "░" * (10 - int(progress_pct * 10))
+
         embed = {
-            "title": f"Milestone Reached: ${milestone:.0f}!",
+            "title": f"{emoji} Milestone Reached: ${milestone:.0f}!",
             "color": 0xf1c40f,  # Gold
-            "description": f"Current PnL: ${pnl:.2f}",
+            "description": f"**Current P&L: ${pnl:.2f}**\n\nProgress to ${next_milestone:.0f}:\n`{progress_bars}` {progress_pct*100:.0f}%",
+            "fields": [
+                {"name": "🎯 Milestone", "value": f"**${milestone:.0f}**", "inline": True},
+                {"name": "💰 Current P&L", "value": f"**${pnl:.2f}**", "inline": True},
+                {"name": "📈 Next Goal", "value": f"**${next_milestone:.0f}**", "inline": True},
+            ],
+            "footer": {"text": "🤖 RL Model • Keep up the great work!"},
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
