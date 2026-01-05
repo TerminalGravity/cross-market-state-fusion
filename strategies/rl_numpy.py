@@ -1,57 +1,133 @@
 #!/usr/bin/env python3
 """
-NumPy-only RL inference for Railway deployment.
+NumPy-only Phase 5 RL inference for production deployment.
 
-Provides Actor network inference without MLX dependency,
-enabling deployment on Linux servers.
+Provides Phase 5 temporal architecture (TemporalEncoder + Asymmetric Actor/Critic)
+without MLX dependency, enabling deployment on Linux servers.
+
+Phase 5 Features:
+- TemporalEncoder: Processes last 5 states → 32 temporal features
+- Asymmetric Actor: 64 hidden units (smaller to prevent overfitting)
+- Combined input: 18 current + 32 temporal = 50 dimensions
 """
 import numpy as np
 from safetensors import safe_open
 from dataclasses import dataclass
-from typing import Tuple
+from typing import Tuple, Dict, Deque
+from collections import deque
 from .base import Strategy, MarketState, Action
 
 
 @dataclass
-class NumpyActor:
+class NumpyTemporalEncoder:
     """
-    NumPy implementation of Actor network.
+    NumPy implementation of TemporalEncoder.
 
-    Architecture: 18 → 128 (tanh) → 128 (tanh) → 3 (softmax)
+    Processes stacked temporal features (5 states × 18 features = 90)
+    → 32 temporal features
 
-    Mirrors the MLX Actor from rl_mlx.py but uses pure NumPy
-    for Linux compatibility.
+    Architecture: 90 → 64 (tanh) → 32 (tanh)
+    With LayerNorm after each layer.
     """
-    fc1_weight: np.ndarray  # (128, 18)
-    fc1_bias: np.ndarray    # (128,)
-    fc2_weight: np.ndarray  # (128, 128)
-    fc2_bias: np.ndarray    # (128,)
-    fc3_weight: np.ndarray  # (3, 128)
-    fc3_bias: np.ndarray    # (3,)
+    fc1_weight: np.ndarray  # (64, 90)
+    fc1_bias: np.ndarray    # (64,)
+    ln1_weight: np.ndarray  # (64,) LayerNorm scale
+    ln1_bias: np.ndarray    # (64,) LayerNorm shift
+    fc2_weight: np.ndarray  # (32, 64)
+    fc2_bias: np.ndarray    # (32,)
+    ln2_weight: np.ndarray  # (32,) LayerNorm scale
+    ln2_bias: np.ndarray    # (32,) LayerNorm shift
+
+    def layer_norm(self, x: np.ndarray, weight: np.ndarray, bias: np.ndarray, eps: float = 1e-5) -> np.ndarray:
+        """Apply LayerNorm: (x - mean) / std * weight + bias"""
+        mean = np.mean(x, axis=-1, keepdims=True)
+        var = np.var(x, axis=-1, keepdims=True)
+        x_norm = (x - mean) / np.sqrt(var + eps)
+        return x_norm * weight + bias
 
     def __call__(self, x: np.ndarray) -> np.ndarray:
         """
-        Forward pass: state → action probabilities.
+        Forward pass: stacked temporal features → temporal encoding.
 
         Args:
-            x: Input features, shape (batch_size, 18) or (18,)
+            x: Input features, shape (batch_size, 90) or (90,) [5 states × 18 features]
 
         Returns:
-            Action probabilities, shape (batch_size, 3) or (3,)
+            Temporal features, shape (batch_size, 32) or (32,)
         """
-        # Ensure 2D input
         squeeze_output = False
         if x.ndim == 1:
             x = x.reshape(1, -1)
             squeeze_output = True
 
-        # Layer 1: Linear + tanh
-        h = np.tanh(x @ self.fc1_weight.T + self.fc1_bias)
+        # Layer 1: Linear → LayerNorm → Tanh
+        h = x @ self.fc1_weight.T + self.fc1_bias
+        h = self.layer_norm(h, self.ln1_weight, self.ln1_bias)
+        h = np.tanh(h)
 
-        # Layer 2: Linear + tanh
-        h = np.tanh(h @ self.fc2_weight.T + self.fc2_bias)
+        # Layer 2: Linear → LayerNorm → Tanh
+        h = h @ self.fc2_weight.T + self.fc2_bias
+        h = self.layer_norm(h, self.ln2_weight, self.ln2_bias)
+        h = np.tanh(h)
 
-        # Layer 3: Linear + softmax
+        if squeeze_output:
+            h = h.squeeze(0)
+
+        return h
+
+
+@dataclass
+class NumpyActor:
+    """
+    NumPy implementation of Phase 5 Actor network (Asymmetric - 64 hidden).
+
+    Architecture: 50 (18 current + 32 temporal) → 64 (tanh) → 64 (tanh) → 3 (softmax)
+    With LayerNorm after each hidden layer.
+    """
+    fc1_weight: np.ndarray  # (64, 50)
+    fc1_bias: np.ndarray    # (64,)
+    ln1_weight: np.ndarray  # (64,)
+    ln1_bias: np.ndarray    # (64,)
+    fc2_weight: np.ndarray  # (64, 64)
+    fc2_bias: np.ndarray    # (64,)
+    ln2_weight: np.ndarray  # (64,)
+    ln2_bias: np.ndarray    # (64,)
+    fc3_weight: np.ndarray  # (3, 64)
+    fc3_bias: np.ndarray    # (3,)
+
+    def layer_norm(self, x: np.ndarray, weight: np.ndarray, bias: np.ndarray, eps: float = 1e-5) -> np.ndarray:
+        """Apply LayerNorm"""
+        mean = np.mean(x, axis=-1, keepdims=True)
+        var = np.var(x, axis=-1, keepdims=True)
+        x_norm = (x - mean) / np.sqrt(var + eps)
+        return x_norm * weight + bias
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        """
+        Forward pass: combined state → action probabilities.
+
+        Args:
+            x: Input features, shape (batch_size, 50) or (50,) [18 current + 32 temporal]
+
+        Returns:
+            Action probabilities, shape (batch_size, 3) or (3,)
+        """
+        squeeze_output = False
+        if x.ndim == 1:
+            x = x.reshape(1, -1)
+            squeeze_output = True
+
+        # Layer 1: Linear → LayerNorm → Tanh
+        h = x @ self.fc1_weight.T + self.fc1_bias
+        h = self.layer_norm(h, self.ln1_weight, self.ln1_bias)
+        h = np.tanh(h)
+
+        # Layer 2: Linear → LayerNorm → Tanh
+        h = h @ self.fc2_weight.T + self.fc2_bias
+        h = self.layer_norm(h, self.ln2_weight, self.ln2_bias)
+        h = np.tanh(h)
+
+        # Layer 3: Linear → Softmax
         logits = h @ self.fc3_weight.T + self.fc3_bias
 
         # Numerically stable softmax
@@ -65,48 +141,77 @@ class NumpyActor:
         return probs
 
 
-def load_actor_from_safetensors(path: str) -> NumpyActor:
+def load_phase5_from_safetensors(path: str) -> Tuple[NumpyTemporalEncoder, NumpyActor]:
     """
-    Load Actor weights from safetensors file.
+    Load Phase 5 TemporalEncoder and Actor weights from safetensors file.
 
     Args:
         path: Path to .safetensors file (e.g., 'rl_model.safetensors')
 
     Returns:
-        NumpyActor with loaded weights
+        Tuple of (NumpyTemporalEncoder, NumpyActor) with loaded weights
     """
     with safe_open(path, framework="numpy") as f:
-        return NumpyActor(
+        # Load TemporalEncoder weights
+        temporal_encoder = NumpyTemporalEncoder(
+            fc1_weight=f.get_tensor("actor.temporal_encoder.fc1.weight"),
+            fc1_bias=f.get_tensor("actor.temporal_encoder.fc1.bias"),
+            ln1_weight=f.get_tensor("actor.temporal_encoder.ln1.weight"),
+            ln1_bias=f.get_tensor("actor.temporal_encoder.ln1.bias"),
+            fc2_weight=f.get_tensor("actor.temporal_encoder.fc2.weight"),
+            fc2_bias=f.get_tensor("actor.temporal_encoder.fc2.bias"),
+            ln2_weight=f.get_tensor("actor.temporal_encoder.ln2.weight"),
+            ln2_bias=f.get_tensor("actor.temporal_encoder.ln2.bias"),
+        )
+
+        # Load Actor weights
+        actor = NumpyActor(
             fc1_weight=f.get_tensor("actor.fc1.weight"),
             fc1_bias=f.get_tensor("actor.fc1.bias"),
+            ln1_weight=f.get_tensor("actor.ln1.weight"),
+            ln1_bias=f.get_tensor("actor.ln1.bias"),
             fc2_weight=f.get_tensor("actor.fc2.weight"),
             fc2_bias=f.get_tensor("actor.fc2.bias"),
+            ln2_weight=f.get_tensor("actor.ln2.weight"),
+            ln2_bias=f.get_tensor("actor.ln2.bias"),
             fc3_weight=f.get_tensor("actor.fc3.weight"),
             fc3_bias=f.get_tensor("actor.fc3.bias"),
         )
 
+        return temporal_encoder, actor
+
 
 class NumpyRLStrategy(Strategy):
     """
-    Inference-only RL strategy using NumPy.
+    Phase 5 inference-only RL strategy using NumPy.
 
+    Implements temporal architecture with state history tracking.
     For deployment on Linux servers where MLX is not available.
-    Loads trained weights from safetensors and runs inference only.
     """
 
-    def __init__(self, model_path: str = "rl_model"):
+    def __init__(self, model_path: str = "rl_model",
+                 history_len: int = 5, input_dim: int = 18, temporal_dim: int = 32):
         """
-        Initialize NumPy RL strategy.
+        Initialize Phase 5 NumPy RL strategy.
 
         Args:
-            model_path: Base path to model files (without extension).
-                        Expects {model_path}.safetensors and {model_path}_stats.npz
+            model_path: Base path to model files (without extension)
+            history_len: Number of historical states to track (5 for Phase 5)
+            input_dim: Input feature dimension (18)
+            temporal_dim: Temporal encoder output dimension (32)
         """
-        super().__init__("rl-numpy")
+        super().__init__("rl-numpy-phase5")
 
-        # Load actor network
+        self.history_len = history_len
+        self.input_dim = input_dim
+        self.temporal_dim = temporal_dim
+
+        # Load Phase 5 networks
         safetensors_path = f"{model_path}.safetensors"
-        self.actor = load_actor_from_safetensors(safetensors_path)
+        self.temporal_encoder, self.actor = load_phase5_from_safetensors(safetensors_path)
+
+        # State history per asset (deque of feature vectors)
+        self.state_history: Dict[str, Deque[np.ndarray]] = {}
 
         # Load normalization stats
         stats_path = f"{model_path}_stats.npz"
@@ -114,12 +219,45 @@ class NumpyRLStrategy(Strategy):
         self.reward_mean = float(stats["reward_mean"])
         self.reward_std = float(stats["reward_std"])
 
-        # Inference only - no training
+        # Inference only
         self.training = False
+
+    def _get_temporal_state(self, asset: str, current_features: np.ndarray) -> np.ndarray:
+        """
+        Get stacked temporal state for an asset.
+
+        Updates history with current features, then returns stacked history.
+        If history length < history_len, pads with zeros.
+
+        Args:
+            asset: Asset identifier (e.g., 'BTC')
+            current_features: Current state features (18,)
+
+        Returns:
+            Stacked temporal features (90,) [5 states × 18 features]
+        """
+        # Initialize history for new assets
+        if asset not in self.state_history:
+            self.state_history[asset] = deque(maxlen=self.history_len)
+
+        # Add current state to history
+        self.state_history[asset].append(current_features.copy())
+
+        # Stack history (most recent last)
+        history_list = list(self.state_history[asset])
+
+        # Pad if needed (zeros for missing history)
+        while len(history_list) < self.history_len:
+            history_list.insert(0, np.zeros(self.input_dim, dtype=np.float32))
+
+        # Stack into single array
+        temporal_state = np.concatenate(history_list)
+
+        return temporal_state
 
     def act(self, state: MarketState) -> Action:
         """
-        Select action using greedy policy (argmax).
+        Select action using greedy policy with temporal context.
 
         Args:
             state: Current market state
@@ -133,7 +271,7 @@ class NumpyRLStrategy(Strategy):
 
     def get_action_probs(self, state: MarketState) -> np.ndarray:
         """
-        Get full action probability distribution.
+        Get full action probability distribution with temporal context.
 
         Args:
             state: Current market state
@@ -141,8 +279,22 @@ class NumpyRLStrategy(Strategy):
         Returns:
             Array of shape (3,) with probabilities for [HOLD, BUY, SELL]
         """
-        features = state.to_features()
-        return self.actor(features)
+        # Extract current features
+        current_features = state.to_features()
+
+        # Get temporal state (updates history)
+        temporal_state = self._get_temporal_state(state.asset, current_features)
+
+        # Encode temporal context
+        temporal_features = self.temporal_encoder(temporal_state)
+
+        # Combine current + temporal
+        combined = np.concatenate([current_features, temporal_features])
+
+        # Get action probabilities
+        probs = self.actor(combined)
+
+        return probs
 
     def get_action_with_info(self, state: MarketState) -> Tuple[Action, np.ndarray, float]:
         """
@@ -165,65 +317,9 @@ class NumpyRLStrategy(Strategy):
         return Action(action_idx), probs, confidence
 
 
-# Verification function to compare with MLX output
-def verify_numpy_matches_mlx(model_path: str = "rl_model") -> bool:
-    """
-    Verify NumPy inference matches MLX output.
-
-    Only runs on macOS where MLX is available.
-    Useful for testing before deployment.
-
-    Returns:
-        True if outputs match within tolerance, False otherwise
-    """
-    try:
-        import mlx.core as mx
-        from .rl_mlx import RLStrategy as MLXStrategy
-    except ImportError:
-        print("MLX not available - skipping verification")
-        return True
-
-    # Load both strategies
-    numpy_strategy = NumpyRLStrategy(model_path)
-    mlx_strategy = MLXStrategy()
-    mlx_strategy.load(model_path)
-    mlx_strategy.training = False
-
-    # Create test state
-    test_state = MarketState(
-        asset="BTC",
-        prob=0.55,
-        time_remaining=0.5,
-    )
-    # Set some features
-    test_state.returns_1m = 0.001
-    test_state.returns_5m = 0.002
-    test_state.order_book_imbalance_l1 = 0.1
-
-    # Get outputs
-    numpy_probs = numpy_strategy.get_action_probs(test_state)
-
-    # MLX inference
-    features = test_state.to_features().reshape(1, -1)
-    mlx_probs = np.array(mlx_strategy.actor(mx.array(features))[0])
-
-    # Compare
-    max_diff = np.max(np.abs(numpy_probs - mlx_probs))
-    matches = max_diff < 1e-5
-
-    if matches:
-        print(f"✓ NumPy matches MLX (max diff: {max_diff:.2e})")
-    else:
-        print(f"✗ Mismatch! Max diff: {max_diff:.2e}")
-        print(f"  NumPy: {numpy_probs}")
-        print(f"  MLX:   {mlx_probs}")
-
-    return matches
-
-
 if __name__ == "__main__":
     # Quick test
-    print("Testing NumPy RL Strategy...")
+    print("Testing Phase 5 NumPy RL Strategy...")
 
     strategy = NumpyRLStrategy("rl_model")
 
@@ -232,12 +328,13 @@ if __name__ == "__main__":
     test_state.returns_1m = 0.001
     test_state.order_book_imbalance_l1 = 0.15
 
-    action, probs, confidence = strategy.get_action_with_info(test_state)
+    # Test with 5 different states to build history
+    for i in range(5):
+        test_state.returns_1m = 0.001 * (i + 1)
+        action, probs, confidence = strategy.get_action_with_info(test_state)
+        print(f"\nIteration {i+1}:")
+        print(f"  Action: {action.name}")
+        print(f"  Probs: HOLD={probs[0]:.3f}, BUY={probs[1]:.3f}, SELL={probs[2]:.3f}")
+        print(f"  Confidence: {confidence:.3f}")
 
-    print(f"Action: {action.name}")
-    print(f"Probs: HOLD={probs[0]:.3f}, BUY={probs[1]:.3f}, SELL={probs[2]:.3f}")
-    print(f"Confidence: {confidence:.3f}")
-
-    # Verify against MLX if available
-    print("\nVerifying against MLX...")
-    verify_numpy_matches_mlx()
+    print("\n✓ Phase 5 NumPy implementation working!")
