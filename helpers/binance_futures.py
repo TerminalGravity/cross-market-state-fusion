@@ -7,6 +7,7 @@ Provides: funding rate, open interest, liquidations, mark price.
 import asyncio
 import json
 import os
+import aiohttp
 import requests
 import websockets
 from datetime import datetime, timezone, timedelta
@@ -27,7 +28,8 @@ BINANCE_FUTURES_WSS = "wss://fstream1.binance.com"  # Asia WSS endpoint
 
 # Residential proxy for bypassing datacenter IP blocks
 # Format: socks5://user:pass@host:port
-PROXY_URL = os.environ.get("BINANCE_PROXY_URL", "")
+# Use same env var as orderbook_wss.py for consistency
+PROXY_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
 
 # Asset to futures symbol mapping
 FUTURES_SYMBOLS = {
@@ -242,6 +244,72 @@ def compute_volume_stats(klines_1m: List) -> Dict[str, float]:
     return {"volume_1h": volume_1h, "volume_24h": volume_24h}
 
 
+# ============ ASYNC FETCH FUNCTIONS ============
+# These non-blocking versions use aiohttp to avoid event loop starvation
+# The sync versions above are kept for backward compatibility
+
+async def async_fetch_funding_rate(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch current funding rate and mark price."""
+    symbol = FUTURES_SYMBOLS.get(asset)
+    if not symbol:
+        return None
+
+    try:
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/premiumIndex?symbol={symbol}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return {
+                    "funding_rate": float(data["lastFundingRate"]),
+                    "mark_price": float(data["markPrice"]),
+                    "index_price": float(data["indexPrice"]),
+                }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching funding rate for {asset}")
+    except Exception as e:
+        print(f"Async error fetching funding rate for {asset}: {e}")
+    return None
+
+
+async def async_fetch_open_interest(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch open interest."""
+    symbol = FUTURES_SYMBOLS.get(asset)
+    if not symbol:
+        return None
+
+    try:
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/openInterest?symbol={symbol}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return {
+                    "open_interest": float(data["openInterest"]),
+                }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OI for {asset}")
+    except Exception as e:
+        print(f"Async error fetching OI for {asset}: {e}")
+    return None
+
+
+async def async_fetch_klines(session: aiohttp.ClientSession, asset: str, interval: str = "1m", limit: int = 60) -> Optional[List]:
+    """Async fetch recent klines for price/volume data."""
+    symbol = FUTURES_SYMBOLS.get(asset)
+    if not symbol:
+        return None
+
+    try:
+        url = f"{BINANCE_FUTURES_API}/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                return await resp.json()
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching klines for {asset}")
+    except Exception as e:
+        print(f"Async error fetching klines for {asset}: {e}")
+    return None
+
+
 class FuturesStreamer:
     """Stream futures data from Binance."""
 
@@ -272,47 +340,78 @@ class FuturesStreamer:
         return await websockets.connect(url)
 
     async def _poll_rest_data(self):
-        """Periodically fetch REST data (funding, OI, klines)."""
-        while self.running:
-            for asset in self.assets:
-                state = self.states.get(asset)
-                if not state:
-                    continue
+        """Periodically fetch REST data (funding, OI, klines) using async HTTP.
 
-                # Funding rate
-                funding = fetch_funding_rate(asset)
-                if funding:
-                    state.funding_rate = funding["funding_rate"]
-                    state.mark_price = funding["mark_price"]
-                    state.index_price = funding["index_price"]
+        Uses aiohttp for non-blocking HTTP requests to avoid event loop starvation.
+        All requests for all assets run concurrently, completing in ~1-2 seconds
+        instead of 12+ seconds with sequential sync requests.
+        """
+        # Create shared aiohttp session for connection pooling
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=8)
+        timeout = aiohttp.ClientTimeout(total=10, connect=5)
 
-                # Open interest
-                oi = fetch_open_interest(asset)
-                if oi:
-                    state.open_interest = oi["open_interest"]
-                    state.oi_history.append(oi["open_interest"])
-                    if len(state.oi_history) > 60:  # Keep ~1hr of history
-                        state.oi_history = state.oi_history[-60:]
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            print("[Binance] REST polling started (async aiohttp)")
 
-                # Klines for multi-TF returns and volume (fetch 65 for 1h returns)
-                klines = fetch_klines(asset, "1m", 65)
-                if klines:
-                    returns = compute_multi_tf_returns(klines)
-                    state.returns_1m = returns["1m"]
-                    state.returns_5m = returns["5m"]
-                    state.returns_10m = returns["10m"]
-                    state.returns_15m = returns["15m"]
-                    state.returns_1h = returns["1h"]
-                    state.realized_vol_1h = returns["realized_vol_1h"]
+            while self.running:
+                poll_start = datetime.now(timezone.utc)
 
-                    vol_stats = compute_volume_stats(klines)
-                    state.volume_1h = vol_stats["volume_1h"]
-                    state.volume_24h = vol_stats["volume_24h"]
+                # Build all fetch tasks for all assets concurrently
+                tasks = []
+                for asset in self.assets:
+                    # Each asset gets 3 concurrent requests: funding, OI, klines
+                    tasks.append(("funding", asset, async_fetch_funding_rate(session, asset)))
+                    tasks.append(("oi", asset, async_fetch_open_interest(session, asset)))
+                    tasks.append(("klines", asset, async_fetch_klines(session, asset, "1m", 65)))
 
-                state.last_update = datetime.now(timezone.utc)
+                # Run ALL requests concurrently (12 requests for 4 assets)
+                results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
 
-            # Poll every 10 seconds
-            await asyncio.sleep(10)
+                # Process results
+                for i, result in enumerate(results):
+                    data_type, asset, _ = tasks[i]
+                    state = self.states.get(asset)
+                    if not state:
+                        continue
+
+                    if isinstance(result, Exception):
+                        continue  # Skip failed requests
+
+                    if result is None:
+                        continue
+
+                    if data_type == "funding":
+                        state.funding_rate = result["funding_rate"]
+                        state.mark_price = result["mark_price"]
+                        state.index_price = result["index_price"]
+
+                    elif data_type == "oi":
+                        state.open_interest = result["open_interest"]
+                        state.oi_history.append(result["open_interest"])
+                        if len(state.oi_history) > 60:
+                            state.oi_history = state.oi_history[-60:]
+
+                    elif data_type == "klines":
+                        returns = compute_multi_tf_returns(result)
+                        state.returns_1m = returns["1m"]
+                        state.returns_5m = returns["5m"]
+                        state.returns_10m = returns["10m"]
+                        state.returns_15m = returns["15m"]
+                        state.returns_1h = returns["1h"]
+                        state.realized_vol_1h = returns["realized_vol_1h"]
+
+                        vol_stats = compute_volume_stats(result)
+                        state.volume_1h = vol_stats["volume_1h"]
+                        state.volume_24h = vol_stats["volume_24h"]
+
+                    state.last_update = datetime.now(timezone.utc)
+
+                poll_elapsed = (datetime.now(timezone.utc) - poll_start).total_seconds()
+                if poll_elapsed > 3:
+                    print(f"[Binance] REST poll slow: {poll_elapsed:.1f}s")
+
+                # Poll every 10 seconds
+                await asyncio.sleep(10)
 
     async def _stream_trades(self):
         """Stream aggregate trades for CVD calculation."""
@@ -457,15 +556,8 @@ class FuturesStreamer:
 
         print("Starting Binance Futures streams...")
 
-        # Initial data fetch
-        for asset in self.assets:
-            state = self.states.get(asset)
-            if state:
-                funding = fetch_funding_rate(asset)
-                if funding:
-                    state.funding_rate = funding["funding_rate"]
-                    state.mark_price = funding["mark_price"]
-                    print(f"  {asset}: funding={state.funding_rate:.4%}, mark=${state.mark_price:,.2f}")
+        # Initial data is now fetched asynchronously by _poll_rest_data
+        # No more sync HTTP calls that block the event loop!
 
         # Run all streams concurrently
         await asyncio.gather(

@@ -20,7 +20,8 @@ BINANCE_WSS = "wss://stream.binance.com:9443"
 
 # Residential proxy for bypassing datacenter IP blocks
 # Format: socks5://user:pass@host:port
-PROXY_URL = os.environ.get("BINANCE_PROXY_URL", "")
+# Use same env var as orderbook_wss.py for consistency
+PROXY_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
 
 # Asset to Binance symbol mapping
 SYMBOLS = {
