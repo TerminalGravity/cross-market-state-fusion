@@ -32,7 +32,9 @@ if not w3.is_connected():
 account = w3.eth.account.from_key(PRIVATE_KEY)
 print(f"📍 Wallet: {account.address}")
 
-# Token contracts
+# Token contracts (USDC.e on Polygon - bridged USDC from Ethereum)
+# IMPORTANT: Polymarket uses USDC.e (bridged), NOT native USDC!
+# Native USDC is 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359 - DO NOT USE
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 CTF_ADDRESS = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
 
