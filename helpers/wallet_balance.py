@@ -13,7 +13,9 @@ from web3.contract import Contract
 
 logger = logging.getLogger(__name__)
 
-# USDC token contract on Polygon
+# USDC.e token contract on Polygon (Bridged USDC from Ethereum)
+# IMPORTANT: Polymarket uses USDC.e (bridged), NOT native USDC!
+# Native USDC is 0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359 - DO NOT USE for Polymarket
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 USDC_DECIMALS = 6
 

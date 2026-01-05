@@ -22,7 +22,8 @@ from eth_account.signers.local import LocalAccount
 
 logger = logging.getLogger(__name__)
 
-# USDC contract on Polygon
+# USDC.e contract on Polygon (Bridged USDC from Ethereum)
+# IMPORTANT: Polymarket uses USDC.e (bridged), NOT native USDC!
 USDC_ADDRESS = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 USDC_DECIMALS = 6
 
