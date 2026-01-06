@@ -8,6 +8,8 @@ PPO (Proximal Policy Optimization) agent that paper trades Polymarket's 15-minut
 
 **Status**: Paper trading by default. Live execution available via py-clob-client.
 
+**⚠️ INFRASTRUCTURE**: Fly.io ONLY. Railway is permanently deprecated - do not use Railway for any deployments.
+
 ## Commands
 
 ```bash
@@ -104,6 +106,8 @@ Critic: 18 → 128 (tanh) → 128 (tanh) → 1
 - Clip epsilon: 0.2, Entropy coef: 0.10
 
 ## Key Design Decisions
+
+0. **Fly.io ONLY - DO NOT USE RAILWAY**: Railway has been permanently deprecated for this project. All deployments use Fly.io exclusively. Ignore any legacy Railway configuration files (railway.toml, Procfile, requirements-railway.toml). The worker is `fly_worker.py`, deploy with `fly deploy`.
 
 1. **Share-based PnL reward**: `(exit - entry) × (dollars / entry)` matches actual binary market economics. 4.5x better ROI than probability-based rewards.
 
