@@ -855,21 +855,23 @@ class TradingWorker:
                     )
                     return
 
-                # HiFi v2: Momentum filter - only buy when price is going UP
-                # Prevents buying into falling markets (major source of losses)
-                if self.momentum_filter_enabled and state.returns_1m < 0:
+                # HiFi v2: Momentum filter - only buy when price is stable or going UP
+                # Allow small negative returns (-0.1%) to catch high-confidence signals
+                MOMENTUM_THRESHOLD = -0.001  # -0.1% minimum (was 0%)
+                if self.momentum_filter_enabled and state.returns_1m < MOMENTUM_THRESHOLD:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - negative momentum "
-                        f"(1m return={state.returns_1m*100:.2f}%)"
+                        f"(1m return={state.returns_1m*100:.2f}% < {MOMENTUM_THRESHOLD*100:.1f}%)"
                     )
                     return
 
-                # HiFi v2: Orderbook imbalance filter - only buy when bids > asks
-                # Positive imbalance = more buyers than sellers (bullish pressure)
-                if self.orderbook_filter_enabled and state.order_book_imbalance_l1 < 0:
+                # HiFi v2: Orderbook imbalance filter - allow slight negative imbalance
+                # Relaxed to L1 >= -0.5 to catch high-confidence signals
+                ORDERBOOK_THRESHOLD = -0.5  # Allow slight negative (was 0)
+                if self.orderbook_filter_enabled and state.order_book_imbalance_l1 < ORDERBOOK_THRESHOLD:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - bearish orderbook "
-                        f"(L1 imbalance={state.order_book_imbalance_l1:.2f})"
+                        f"(L1 imbalance={state.order_book_imbalance_l1:.2f} < {ORDERBOOK_THRESHOLD})"
                     )
                     return
 
