@@ -284,16 +284,22 @@ class TradingWorker:
 
         # Take-profit / Stop-loss thresholds (override RL when hit)
         # Binary markets: lock in gains before resolution swing
-        self.tp_threshold = 2.00   # +200% → force sell (e.g., 10¢→30¢, locks 3x gain)
-        self.sl_threshold = -0.50  # -50% → force sell (prevents -100% wipeout)
+        # HiFi v2: Tighter stop-loss to cut losses faster (trial by error optimization)
+        self.tp_threshold = 1.50   # +150% → force sell (e.g., 10¢→25¢, locks 2.5x gain)
+        self.sl_threshold = -0.25  # -25% → force sell (cut losses faster, was -50%)
         self.tp_sl_enabled = True  # Enable TP/SL safety net
+
+        # HiFi v2: Momentum & orderbook filters for live mode
+        self.momentum_filter_enabled = True
+        self.orderbook_filter_enabled = True
 
         # Control
         self.running = False
         self.shutdown_event = asyncio.Event()
 
         logger.info(f"TradingWorker initialized (dual_mode={self.dual_mode}, live_enabled={self.live_enabled})")
-        logger.info(f"TP/SL safety net: enabled={self.tp_sl_enabled}, TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
+        logger.info(f"[HiFi v2] TP/SL: TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
+        logger.info(f"[HiFi v2] Filters: momentum={self.momentum_filter_enabled}, orderbook={self.orderbook_filter_enabled}")
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -744,7 +750,8 @@ class TradingWorker:
                     return
 
                 # Skip if confidence too low (signal quality filter)
-                MIN_CONFIDENCE = 0.40  # 40% minimum confidence for live trades
+                # HiFi v2: Raised from 40% to 50% for higher quality signals
+                MIN_CONFIDENCE = 0.50  # 50% minimum confidence for live trades
                 if confidence < MIN_CONFIDENCE:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - confidence {confidence*100:.0f}% < {MIN_CONFIDENCE*100:.0f}% min"
@@ -789,6 +796,24 @@ class TradingWorker:
                 if state.prob < MIN_ENTRY_PRICE:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% < {MIN_ENTRY_PRICE*100:.0f}% min (too risky)"
+                    )
+                    return
+
+                # HiFi v2: Momentum filter - only buy when price is going UP
+                # Prevents buying into falling markets (major source of losses)
+                if self.momentum_filter_enabled and state.returns_1m < 0:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - negative momentum "
+                        f"(1m return={state.returns_1m*100:.2f}%)"
+                    )
+                    return
+
+                # HiFi v2: Orderbook imbalance filter - only buy when bids > asks
+                # Positive imbalance = more buyers than sellers (bullish pressure)
+                if self.orderbook_filter_enabled and state.order_book_imbalance_l1 < 0:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - bearish orderbook "
+                        f"(L1 imbalance={state.order_book_imbalance_l1:.2f})"
                     )
                     return
 
