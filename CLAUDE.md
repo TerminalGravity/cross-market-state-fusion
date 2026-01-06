@@ -47,10 +47,10 @@ python terminal_ui.py --entry-low 0.10 --entry-high 0.25 --tp 0.30 --sl 0.05
 python terminal_ui.py --asset BTC
 
 # Fly.io worker with dual-mode (paper + live)
-python railway_worker.py
+python fly_worker.py
 
 # Profit transfer dry-run (test without sending transactions)
-PROFIT_TRANSFER_DRY_RUN=true python railway_worker.py
+PROFIT_TRANSFER_DRY_RUN=true python fly_worker.py
 
 # Fly.io deployment commands
 fly deploy                                     # Deploy worker
@@ -137,7 +137,7 @@ POLYMARKET_SIGNATURE_TYPE=0  # 0=EOA, 1=Email/Magic, 2=Browser
 
 ### Profit Transfer System
 
-The profit transfer system automatically moves accumulated profits from the hot wallet to a cold wallet for security. It runs as a background task in the Fly.io worker (`railway_worker.py`).
+The profit transfer system automatically moves accumulated profits from the hot wallet to a cold wallet for security. It runs as a background task in the Fly.io worker (`fly_worker.py`).
 
 **Configuration** (`.env`):
 ```bash

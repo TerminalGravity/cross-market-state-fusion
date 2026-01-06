@@ -10,8 +10,10 @@ asyncpg>=0.29.0
 
 # Web/API
 aiohttp>=3.9.0
+aiohttp-socks>=0.8.4  # Native SOCKS5 proxy support for aiohttp WebSocket
 websockets>=12.0
 requests>=2.31.0
+httpx[http2,socks]>=0.27.0  # HTTP/2 client + SOCKS5 proxy support
 python-socks[asyncio]>=2.4.0  # SOCKS5 proxy for residential IP routing
 
 # Dashboard

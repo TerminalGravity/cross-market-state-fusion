@@ -1,13 +1,19 @@
 """
 Binance WebSocket helpers for real-time crypto price data.
+
+Features REST API fallback when WebSocket is blocked by datacenter IP restrictions.
 """
 import asyncio
 import json
+import logging
 import os
 import websockets
+import httpx
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Callable, Optional
+
+logger = logging.getLogger(__name__)
 
 # Try to import SOCKS proxy support
 try:
@@ -17,11 +23,16 @@ except ImportError:
     PROXY_AVAILABLE = False
 
 BINANCE_WSS = "wss://stream.binance.com:9443"
+BINANCE_REST = "https://api.binance.com/api/v3"
 
 # Residential proxy for bypassing datacenter IP blocks
 # Format: socks5://user:pass@host:port
 # Use same env var as orderbook_wss.py for consistency
 PROXY_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
+
+# REST fallback configuration
+REST_POLL_INTERVAL = 0.2  # 200ms polling when WSS unavailable
+WSS_FAILURE_THRESHOLD = 5  # Switch to REST after this many WSS failures
 
 # Asset to Binance symbol mapping
 SYMBOLS = {
@@ -50,7 +61,10 @@ class PriceState:
 
 
 class BinanceStreamer:
-    """Stream real-time prices from Binance for multiple assets."""
+    """Stream real-time prices from Binance for multiple assets.
+
+    Automatically falls back to REST API polling when WebSocket is blocked.
+    """
 
     def __init__(self, assets: List[str] = None):
         """
@@ -63,6 +77,11 @@ class BinanceStreamer:
         self.states: Dict[str, PriceState] = {}
         self.running = False
         self.callbacks: List[Callable] = []
+
+        # Fallback tracking
+        self._wss_failures = 0
+        self._using_rest_fallback = False
+        self._rest_client: Optional[httpx.AsyncClient] = None
 
         for asset in self.assets:
             self.states[asset] = PriceState(asset=asset)
@@ -81,6 +100,51 @@ class BinanceStreamer:
         state = self.states.get(asset)
         return state.history[-n:] if state else []
 
+    async def _poll_rest_prices(self) -> None:
+        """Poll prices via REST API (fallback mode).
+
+        Called when WebSocket connection fails repeatedly.
+        Polls every REST_POLL_INTERVAL seconds.
+        """
+        if not self._rest_client:
+            self._rest_client = httpx.AsyncClient(timeout=5.0)
+
+        symbols = [SYMBOLS[a].upper() for a in self.assets if a in SYMBOLS]
+        # Use batch endpoint for efficiency
+        url = f"{BINANCE_REST}/ticker/price"
+
+        poll_count = 0
+        while self.running and self._using_rest_fallback:
+            try:
+                resp = await self._rest_client.get(url)
+                if resp.status_code == 200:
+                    all_prices = resp.json()
+                    price_map = {p["symbol"]: float(p["price"]) for p in all_prices}
+
+                    for asset, sym in SYMBOLS.items():
+                        if asset in self.assets:
+                            price = price_map.get(sym.upper())
+                            if price:
+                                state = self.states.get(asset)
+                                if state:
+                                    state.update(price)
+                                    for cb in self.callbacks:
+                                        try:
+                                            cb(asset, price)
+                                        except:
+                                            pass
+
+                    # Log periodically (every 5 minutes = 1500 polls at 200ms)
+                    poll_count += 1
+                    if poll_count % 1500 == 0:
+                        prices_str = ", ".join(f"{a}=${price_map.get(SYMBOLS[a].upper(), 0):,.0f}" for a in self.assets)
+                        logger.info(f"[BINANCE] REST fallback active ({poll_count} polls): {prices_str}")
+
+            except Exception as e:
+                logger.debug(f"[BINANCE] REST poll error: {e}")
+
+            await asyncio.sleep(REST_POLL_INTERVAL)
+
     async def _connect_ws(self, url: str):
         """Connect to WebSocket, optionally through proxy."""
         if PROXY_URL and PROXY_AVAILABLE:
@@ -90,8 +154,15 @@ class BinanceStreamer:
         return await websockets.connect(url)
 
     async def stream(self):
-        """Start streaming prices."""
+        """Start streaming prices.
+
+        Attempts WebSocket first. Falls back to REST API polling after
+        WSS_FAILURE_THRESHOLD consecutive failures.
+        """
         self.running = True
+        self._wss_failures = 0
+        self._using_rest_fallback = False
+        rest_task = None
 
         # Build stream URL
         symbols = [SYMBOLS[a] for a in self.assets if a in SYMBOLS]
@@ -99,7 +170,7 @@ class BinanceStreamer:
         url = f"{BINANCE_WSS}/stream?streams={streams}"
 
         proxy_status = "via proxy" if (PROXY_URL and PROXY_AVAILABLE) else "direct"
-        print(f"Connecting to Binance WSS for {', '.join(self.assets)} ({proxy_status})...")
+        logger.info(f"[BINANCE] Connecting to WSS for {', '.join(self.assets)} ({proxy_status})...")
 
         backoff = 1
         max_backoff = 120  # Max 2 minutes between retries
@@ -107,8 +178,17 @@ class BinanceStreamer:
         while self.running:
             try:
                 async with await self._connect_ws(url) as ws:
-                    print("✓ Connected to Binance")
+                    logger.info("[BINANCE] ✓ Connected to Binance WSS")
                     backoff = 1  # Reset on success
+                    self._wss_failures = 0
+
+                    # Stop REST fallback if WSS reconnects
+                    if self._using_rest_fallback:
+                        logger.info("[BINANCE] WSS recovered, stopping REST fallback")
+                        self._using_rest_fallback = False
+                        if rest_task:
+                            rest_task.cancel()
+                            rest_task = None
 
                     while self.running:
                         try:
@@ -141,14 +221,36 @@ class BinanceStreamer:
                             pass
 
             except Exception as e:
-                if backoff < 10:  # Only log first few retries
-                    print(f"Binance WSS error: {e}, retrying in {backoff}s...")
+                self._wss_failures += 1
+
+                # Check if we should fall back to REST
+                if self._wss_failures >= WSS_FAILURE_THRESHOLD and not self._using_rest_fallback:
+                    logger.warning(
+                        f"[BINANCE] WSS failed {self._wss_failures}x, "
+                        f"switching to REST fallback (polling every {REST_POLL_INTERVAL}s)"
+                    )
+                    self._using_rest_fallback = True
+                    rest_task = asyncio.create_task(self._poll_rest_prices())
+
+                if not self._using_rest_fallback and backoff < 10:
+                    logger.warning(f"[BINANCE] WSS error: {e}, retrying in {backoff}s...")
+
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
 
     def stop(self):
-        """Stop streaming."""
+        """Stop streaming and cleanup resources."""
         self.running = False
+        self._using_rest_fallback = False
+        if self._rest_client:
+            # Close async client (will happen on next event loop tick)
+            asyncio.create_task(self._close_rest_client())
+
+    async def _close_rest_client(self):
+        """Async cleanup for REST client."""
+        if self._rest_client:
+            await self._rest_client.aclose()
+            self._rest_client = None
 
 
 async def get_current_prices(assets: List[str] = None) -> Dict[str, float]:
