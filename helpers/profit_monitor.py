@@ -141,7 +141,7 @@ class ProfitMonitor:
                     f"initial=${self.initial_balance:.2f}, "
                     f"locked=${open_positions_value:.2f}, "
                     f"available=${available_profit:.2f}, "
-                    f"hours_since_last={hours_since_last:.1f if hours_since_last else 'N/A'}"
+                    f"hours_since_last={f'{hours_since_last:.1f}' if hours_since_last is not None else 'N/A'}"
                 )
 
             # Trigger transfer?
@@ -152,7 +152,7 @@ class ProfitMonitor:
                     f"Transfer triggered ({trigger_reason}): "
                     f"available_profit=${available_profit:.2f}, "
                     f"threshold=${self.threshold:.2f}, "
-                    f"hours_since_last={hours_since_last:.1f if hours_since_last else 'N/A'}h"
+                    f"hours_since_last={f'{hours_since_last:.1f}' if hours_since_last is not None else 'N/A'}h"
                 )
 
                 # Sanity check: don't transfer if available profit is negative or tiny

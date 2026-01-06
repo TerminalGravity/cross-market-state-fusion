@@ -2,19 +2,38 @@
 Polymarket CLOB WebSocket helpers for orderbook streaming.
 
 Uses:
-- websockets library with python-socks for SOCKS5 proxy support (more reliable than aiohttp)
+- aiohttp-socks for native async WebSocket + SOCKS5 proxy support (cleaner than python-socks)
+- websockets library as fallback for direct connections
 - Falls back to REST polling if WSS fails after MAX_WSS_FAILURES attempts
+
+Connection Strategy:
+1. Try SOCKS5 via aiohttp-socks (preferred - handles proxy + WSS natively)
+2. Try direct websockets connection (if Cloudflare not blocking)
+3. Fall back to REST polling (last resort)
 """
 import asyncio
 import json
 import logging
 import os
-import aiohttp  # For REST fallback
+import aiohttp
 import websockets
-from python_socks.async_.asyncio.v2 import Proxy
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Callable, Optional, Any
+
+# Optional imports for SOCKS5 proxy support
+try:
+    from aiohttp_socks import ProxyConnector, ProxyType
+    HAS_AIOHTTP_SOCKS = True
+except ImportError:
+    HAS_AIOHTTP_SOCKS = False
+
+try:
+    from python_socks.async_.asyncio.v2 import Proxy
+    HAS_PYTHON_SOCKS = True
+except ImportError:
+    HAS_PYTHON_SOCKS = False
 
 # Residential proxy for bypassing Cloudflare datacenter IP blocks
 # SOCKS5 proxy is more reliable for WebSocket than HTTP proxy
@@ -29,9 +48,10 @@ logger = logging.getLogger(__name__)
 CLOB_WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 CLOB_REST = "https://clob.polymarket.com/book"
 
-# After N consecutive WebSocket failures, switch to REST polling
-# Set to 1 for immediate REST fallback since SOCKS5 consistently times out on Fly.io
-MAX_WSS_FAILURES = 1
+# After N WebSocket failures across all methods, switch to REST polling
+# Set to 2 for fast fallback - proxy methods consistently fail due to event loop contention
+# and Cloudflare WebSocket-level blocking. REST is proven to work.
+MAX_WSS_FAILURES = 2
 REST_POLL_INTERVAL = 1.5  # Poll every 1.5 seconds for faster data
 
 # Browser-like headers to bypass Cloudflare bot detection
@@ -225,43 +245,31 @@ class OrderbookStreamer:
         return None
 
     async def _rest_polling_loop(self):
-        """Fallback polling loop using REST API with sync httpx in ThreadPoolExecutor.
+        """Fallback polling loop using REST API with async httpx.
 
-        Uses synchronous httpx.Client which is proven to work in 0.2s from Fly.io,
-        run in ThreadPoolExecutor to avoid blocking the event loop.
+        Uses httpx.AsyncClient which integrates natively with asyncio, avoiding
+        the event loop starvation issues that occur with sync client + ThreadPoolExecutor.
         """
         import httpx
-        from concurrent.futures import ThreadPoolExecutor
 
-        logger.info("[OB] ✓ Starting REST polling fallback mode (sync httpx in thread)")
+        logger.info("[OB] ✓ Starting REST polling fallback mode (aiohttp)")
 
         consecutive_failures = 0
         max_consecutive_failures = 10
         last_log_time = datetime.now(timezone.utc)
 
-        # Create sync client with aligned timeouts and proper connection limits.
-        # IMPORTANT: httpx timeout must be LESS than asyncio.wait_for timeout to avoid
-        # race condition where asyncio times out but httpx keeps running in thread.
-        # asyncio timeout is 60s warmup / 35s normal, so httpx should be ~25s max.
-        #
-        # Pool settings: Allow enough connections for all concurrent requests.
-        # With HTTP/2, connections are multiplexed but we still need enough pool slots.
-        sync_client = httpx.Client(
-            timeout=httpx.Timeout(connect=10.0, read=15.0, write=5.0, pool=30.0),
-            limits=httpx.Limits(max_connections=50, max_keepalive_connections=30),
-            http2=True,
+        # Use aiohttp which is proven to work in this async environment
+        # (httpx.AsyncClient had connection pool issues - never initiated requests)
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=10, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=15, connect=10, sock_read=10)
+        session = aiohttp.ClientSession(
+            connector=connector,
+            timeout=timeout,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 "Accept": "application/json",
             },
-            follow_redirects=True,
         )
-
-        # ThreadPoolExecutor to run sync requests without blocking event loop.
-        # Must be >= orderbook count to prevent queue backup that causes timeouts.
-        # With 4 markets × 2 sides × ~3 time windows = ~24 orderbooks max.
-        executor = ThreadPoolExecutor(max_workers=32)
-        loop = asyncio.get_event_loop()
 
         try:
             iteration = 0
@@ -271,52 +279,66 @@ class OrderbookStreamer:
                 success_count = 0
                 total_count = len(self.orderbooks)
 
-                # Adaptive timeout: keep at 60s always
-                # Polymarket API can be slow (50-60s for batch requests)
-                # httpx timeout is 10s connect + 15s read, but pool/thread waits add more
-                request_timeout = 60.0
-
                 # Log iteration status
                 iteration_start = datetime.now(timezone.utc)
                 if iteration == 1:
-                    logger.info(f"[OB] REST polling: iteration 1 ({total_count} orderbooks in parallel, timeout={request_timeout}s)")
+                    logger.info(f"[OB] REST polling: iteration 1 ({total_count} orderbooks, aiohttp)")
                     sample_tokens = [ob.token_id[:20] for ob in list(self.orderbooks.values())[:2]]
                     logger.info(f"[OB] Sample tokens: {sample_tokens}")
-                elif iteration == 2:
-                    logger.info(f"[OB] REST polling: iteration 2 (timeout={request_timeout}s)")
-                elif iteration == 3:
-                    logger.info(f"[OB] REST polling: iteration 3 (timeout={request_timeout}s)")
+                elif iteration <= 3:
+                    logger.info(f"[OB] REST polling: iteration {iteration}")
 
                 # Create parallel fetch tasks for ALL orderbooks at once
                 orderbook_items = list(self.orderbooks.items())
 
-                async def fetch_with_timeout(key, ob):
-                    """Fetch single orderbook with timeout wrapper."""
+                async def fetch_aiohttp(key, ob):
+                    """Fetch single orderbook using aiohttp."""
+                    fetch_start = datetime.now(timezone.utc)
+                    url = f"{CLOB_REST}?token_id={ob.token_id}"
                     try:
-                        data = await asyncio.wait_for(
-                            loop.run_in_executor(
-                                executor,
-                                self._sync_fetch_orderbook,
-                                sync_client,
-                                ob.token_id
-                            ),
-                            timeout=request_timeout
-                        )
-                        return (key, ob, data, None)
+                        async with session.get(url) as resp:
+                            fetch_elapsed = (datetime.now(timezone.utc) - fetch_start).total_seconds()
+
+                            if resp.status == 200:
+                                data = await resp.json()
+                                if "bids" in data and "asks" in data:
+                                    if fetch_elapsed > 3.0:  # Log slow requests
+                                        logger.info(f"[OB] Slow fetch: {ob.token_id[:10]}... {fetch_elapsed:.1f}s")
+                                    return (key, ob, data, None)
+                                return (key, ob, None, "missing bids/asks")
+                            elif resp.status == 403:
+                                return (key, ob, None, f"403 Forbidden")
+                            else:
+                                return (key, ob, None, f"HTTP {resp.status}")
+
                     except asyncio.TimeoutError:
+                        fetch_elapsed = (datetime.now(timezone.utc) - fetch_start).total_seconds()
+                        logger.warning(f"[OB] Fetch timeout: {ob.token_id[:10]}... after {fetch_elapsed:.1f}s")
                         return (key, ob, None, "timeout")
+                    except aiohttp.ClientError as e:
+                        return (key, ob, None, f"ClientError: {type(e).__name__}")
                     except Exception as e:
                         return (key, ob, None, str(e))
 
                 # Run ALL requests in parallel using asyncio.gather
-                tasks = [fetch_with_timeout(key, ob) for key, ob in orderbook_items]
+                tasks = [fetch_aiohttp(key, ob) for key, ob in orderbook_items]
+
+                # Timing: log before/after gather to diagnose delays
+                gather_start = datetime.now(timezone.utc)
+                if iteration <= 5:
+                    logger.info(f"[OB] Starting async gather for {len(tasks)} tasks")
+
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                gather_elapsed = (datetime.now(timezone.utc) - gather_start).total_seconds()
+                if iteration <= 5 or gather_elapsed > 10:
+                    logger.info(f"[OB] Gather completed in {gather_elapsed:.1f}s ({len(results)} results)")
 
                 # Debug: log result types
                 exception_count = sum(1 for r in results if isinstance(r, Exception))
                 tuple_count = sum(1 for r in results if isinstance(r, tuple))
                 other_count = len(results) - exception_count - tuple_count
-                if iteration <= 5 or success_count == 0:
+                if iteration <= 3 or (exception_count > 0 and iteration <= 10):
                     logger.info(f"[OB] DEBUG: gather returned {len(results)} results - {tuple_count} tuples, {exception_count} exceptions, {other_count} other")
 
                 # Process all results
@@ -396,10 +418,159 @@ class OrderbookStreamer:
                 await asyncio.sleep(REST_POLL_INTERVAL)
 
         finally:
-            # Clean up sync client and executor
-            sync_client.close()
-            executor.shutdown(wait=False)
+            # Clean up aiohttp session
+            await session.close()
             logger.info("[OB] REST polling loop ended")
+
+    async def _connect_with_aiohttp_socks(self, proxy_url: str) -> Optional[aiohttp.ClientWebSocketResponse]:
+        """Connect to WebSocket through SOCKS5 proxy using aiohttp-socks.
+
+        This is the preferred method as aiohttp-socks handles SOCKS5 protocol natively
+        and integrates cleanly with aiohttp's WebSocket client. No socket extraction
+        hacks needed.
+        """
+        if not HAS_AIOHTTP_SOCKS:
+            logger.warning("[OB] aiohttp-socks not installed, skipping")
+            return None
+
+        try:
+            # Parse SOCKS5 URL and create connector
+            # Format: socks5://user:pass@host:port
+            connector = ProxyConnector.from_url(proxy_url)
+
+            # Create session with proxy connector and reasonable timeouts
+            timeout = aiohttp.ClientTimeout(
+                total=60,          # Total timeout
+                connect=30,        # Connection timeout (includes proxy handshake)
+                sock_connect=30,   # Socket connection timeout
+                sock_read=30       # Socket read timeout
+            )
+
+            # Use browser-like headers to avoid Cloudflare detection
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Origin": "https://polymarket.com",
+            }
+
+            session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+                headers=headers
+            )
+
+            # Store session reference for cleanup
+            self._aiohttp_session = session
+
+            logger.info("[OB] Attempting aiohttp-socks WebSocket connection...")
+
+            ws = await asyncio.wait_for(
+                session.ws_connect(
+                    CLOB_WSS,
+                    heartbeat=30,
+                    receive_timeout=60,
+                    autoping=True,
+                ),
+                timeout=45
+            )
+
+            logger.info("[OB] ✓ aiohttp-socks WebSocket connected!")
+            return ws
+
+        except asyncio.TimeoutError:
+            logger.error("[OB] aiohttp-socks connection timeout (45s)")
+            return None
+        except Exception as e:
+            logger.error(f"[OB] aiohttp-socks connection failed: {type(e).__name__}: {e}")
+            return None
+
+    async def _connect_with_socks5_in_thread(self, proxy_url: str) -> Optional[websockets.WebSocketClientProtocol]:
+        """Connect to WebSocket through SOCKS5 proxy in a dedicated thread.
+
+        This isolates the SOCKS5 connection from the main event loop to avoid
+        contention with other async tasks (Binance/OKX streams). The proxy
+        handshake runs in its own event loop in a thread, then hands off the
+        connected socket to the main loop.
+        """
+        if not HAS_PYTHON_SOCKS:
+            logger.warning("[OB] python-socks not installed, skipping thread-based approach")
+            return None
+
+        import socket
+        import ssl
+        from concurrent.futures import ThreadPoolExecutor
+
+        def establish_socks5_tunnel():
+            """Establish SOCKS5 tunnel synchronously in a thread."""
+            import asyncio as thread_asyncio
+
+            async def _tunnel():
+                proxy = Proxy.from_url(proxy_url)
+                stream = await thread_asyncio.wait_for(
+                    proxy.connect(
+                        dest_host="ws-subscriptions-clob.polymarket.com",
+                        dest_port=443,
+                        timeout=30
+                    ),
+                    timeout=45
+                )
+                # Return the file descriptor for the socket
+                writer = stream._writer
+                transport_socket = writer.get_extra_info('socket')
+                fd = transport_socket.fileno()
+                # Duplicate the FD so it survives the thread's loop closing
+                new_fd = os.dup(fd)
+                return new_fd
+
+            # Create new event loop for this thread
+            loop = thread_asyncio.new_event_loop()
+            thread_asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_tunnel())
+            finally:
+                loop.close()
+
+        try:
+            logger.info("[OB] Attempting SOCKS5 connection in dedicated thread...")
+
+            # Run SOCKS5 tunnel establishment in a separate thread
+            loop = asyncio.get_event_loop()
+            executor = ThreadPoolExecutor(max_workers=1)
+
+            fd = await asyncio.wait_for(
+                loop.run_in_executor(executor, establish_socks5_tunnel),
+                timeout=60
+            )
+
+            logger.info(f"[OB] ✓ SOCKS5 tunnel established (fd={fd})")
+
+            # Create socket from the file descriptor in main thread
+            raw_sock = socket.fromfd(fd, socket.AF_INET, socket.SOCK_STREAM)
+            os.close(fd)  # Close duplicate, raw_sock owns it now
+
+            # Connect websockets over the proxied socket
+            ssl_context = ssl.create_default_context()
+            ws = await asyncio.wait_for(
+                websockets.connect(
+                    CLOB_WSS,
+                    sock=raw_sock,
+                    ssl=ssl_context,
+                    server_hostname="ws-subscriptions-clob.polymarket.com",
+                    ping_interval=30,
+                    ping_timeout=60,
+                    close_timeout=10,
+                ),
+                timeout=30
+            )
+
+            logger.info("[OB] ✓ WebSocket connected over SOCKS5 tunnel!")
+            return ws
+
+        except asyncio.TimeoutError:
+            logger.error("[OB] SOCKS5 thread connection timeout (60s)")
+            return None
+        except Exception as e:
+            logger.error(f"[OB] SOCKS5 thread connection failed: {type(e).__name__}: {e}")
+            return None
 
     async def _connect_with_socks5_proxy(self, proxy_url: str) -> Optional[websockets.WebSocketClientProtocol]:
         """Connect to WebSocket through SOCKS5 proxy using python-socks.
@@ -413,6 +584,10 @@ class OrderbookStreamer:
         the stream's writer transport and use socket.fromfd() to create a real
         socket object that websockets can use.
         """
+        if not HAS_PYTHON_SOCKS:
+            logger.warning("[OB] python-socks not installed, cannot use SOCKS5 proxy")
+            return None
+
         import socket
         import ssl
 
@@ -481,20 +656,21 @@ class OrderbookStreamer:
             return None
 
     async def stream(self):
-        """Start streaming orderbooks using websockets library with SOCKS5 proxy support.
+        """Start streaming orderbooks using WebSocket with SOCKS5 proxy support.
 
-        Connection strategy:
-        1. Try direct connection first (works if Cloudflare isn't blocking)
-        2. Try SOCKS5 proxy if direct fails (more reliable than HTTP proxy for WSS)
-        3. Try HTTP proxy via aiohttp as last resort
-        4. Fall back to REST polling after MAX_WSS_FAILURES total failures
+        Connection strategy (priority order):
+        1. aiohttp-socks (cleanest - native async SOCKS5 + WebSocket)
+        2. SOCKS5 in thread (isolates from event loop contention)
+        3. python-socks fallback (original method)
+        4. Direct connection (if Cloudflare not blocking - usually fails from datacenter)
+        5. REST polling (last resort)
         """
         self.running = True
-        # Use TRY_DIRECT_FIRST to decide initial connection strategy
-        # If ORDERBOOK_TRY_DIRECT=false, skip direct attempts and go straight to proxy
-        self._use_proxy = not TRY_DIRECT_FIRST
-        self._direct_failed_count = 0
-        logger.info(f"[OB] Orderbook streamer starting... (TRY_DIRECT_FIRST={TRY_DIRECT_FIRST}, use_proxy={self._use_proxy})")
+        self._aiohttp_session = None  # For cleanup
+        self._aiohttp_ws = None  # aiohttp WebSocket reference
+        self._wss_failure_count = 0
+        logger.info(f"[OB] Orderbook streamer starting... (HAS_AIOHTTP_SOCKS={HAS_AIOHTTP_SOCKS}, HAS_PYTHON_SOCKS={HAS_PYTHON_SOCKS})")
+        logger.info(f"[OB] SOCKS5 URL configured: {'Yes' if PROXY_SOCKS5_URL else 'No'}")
 
         while self.running:
             # Wait for subscriptions if none exist yet
@@ -503,44 +679,46 @@ class OrderbookStreamer:
                 continue
 
             ws = None
+            aiohttp_ws = None  # aiohttp uses different WebSocket type
             connection_type = "unknown"
 
             try:
-                # Strategy: Direct → SOCKS5 → REST fallback
-                if not self._use_proxy:
-                    logger.info(f"[OB] Connecting (direct) with {len(self._subscriptions)} subs, {len(self._pending_subs)} pending")
-                    logger.info("[OB] Connecting directly (no proxy)...")
+                num_subs = len(self._subscriptions) + len(self._pending_subs)
+                logger.info(f"[OB] Connection attempt (failures={self._wss_failure_count}/{MAX_WSS_FAILURES})")
+
+                # Strategy 1: Try direct connection FIRST (Fly.io IPs might not be blocked)
+                if not ws and not aiohttp_ws:
+                    logger.info(f"[OB] Trying direct WebSocket with {num_subs} subscriptions...")
                     ws = await self._connect_direct()
                     if ws:
                         connection_type = "direct"
                     else:
-                        self._direct_failed_count += 1
                         self._wss_failure_count += 1
-                        if self._direct_failed_count >= 2 and PROXY_SOCKS5_URL:
-                            logger.warning(f"[OB] Direct failed {self._direct_failed_count}x, trying SOCKS5 proxy...")
-                            self._use_proxy = True
+                        logger.info(f"[OB] Direct failed (failures={self._wss_failure_count})")
 
-                if self._use_proxy and not ws and PROXY_SOCKS5_URL:
-                    logger.info(f"[OB] Connecting (via SOCKS5 proxy) with {len(self._subscriptions)} subs")
-                    ws = await self._connect_with_socks5_proxy(PROXY_SOCKS5_URL)
-                    if ws:
-                        connection_type = "SOCKS5 proxy"
+                # Strategy 2: Try aiohttp-socks (if direct failed and proxy available)
+                if not ws and not aiohttp_ws and PROXY_SOCKS5_URL and HAS_AIOHTTP_SOCKS:
+                    logger.info(f"[OB] Trying aiohttp-socks with {num_subs} subscriptions...")
+                    aiohttp_ws = await self._connect_with_aiohttp_socks(PROXY_SOCKS5_URL)
+                    if aiohttp_ws:
+                        connection_type = "aiohttp-socks"
                     else:
                         self._wss_failure_count += 1
+                        logger.info(f"[OB] aiohttp-socks failed (failures={self._wss_failure_count})")
 
-                # Check if we should fall back to REST
+                # Check if we should fall back to REST (fail fast after 2 attempts)
                 if self._wss_failure_count >= MAX_WSS_FAILURES:
                     logger.warning(f"[OB] ✓ WSS failed {self._wss_failure_count}x, activating REST polling fallback")
                     self._use_rest_fallback = True
                     await self._rest_polling_loop()
                     return  # Exit WSS stream loop
 
-                if not ws:
-                    await asyncio.sleep(1)
+                if not ws and not aiohttp_ws:
+                    logger.warning(f"[OB] Connection methods failed (count={self._wss_failure_count}), retrying in 2s...")
+                    await asyncio.sleep(2)
                     continue
 
                 # Successfully connected
-                self._direct_failed_count = 0
                 logger.info(f"✓ Connected to Polymarket CLOB WSS ({connection_type})")
 
                 # Collect all token IDs for initial subscription
@@ -553,16 +731,22 @@ class OrderbookStreamer:
 
                 if token_ids:
                     # Send single subscription with all assets
-                    sub_msg = {
+                    sub_msg = json.dumps({
                         "assets_ids": token_ids,
                         "type": "market"
-                    }
-                    await ws.send(json.dumps(sub_msg))
+                    })
+                    # aiohttp uses send_str(), websockets uses send()
+                    if aiohttp_ws:
+                        await aiohttp_ws.send_str(sub_msg)
+                    else:
+                        await ws.send(sub_msg)
                     logger.info(f"Subscribed to {len(token_ids)} orderbooks")
 
+                # Store reference for cleanup
                 self._ws = ws
+                self._aiohttp_ws = aiohttp_ws
 
-                # Listen for updates
+                # Listen for updates - handle both aiohttp and websockets APIs
                 while self.running:
                     try:
                         # Check for forced reconnection (markets changed)
@@ -575,17 +759,35 @@ class OrderbookStreamer:
                         if self._pending_subs:
                             new_tokens = self._pending_subs.copy()
                             self._pending_subs.clear()
-                            sub_msg = {
+                            sub_msg = json.dumps({
                                 "assets_ids": new_tokens,
                                 "type": "market"
-                            }
-                            await ws.send(json.dumps(sub_msg))
+                            })
+                            if aiohttp_ws:
+                                await aiohttp_ws.send_str(sub_msg)
+                            else:
+                                await ws.send(sub_msg)
                             logger.info(f"[OB] Sent subscription for {len(new_tokens)} new tokens")
 
                         # Receive with short timeout to check pending subs frequently
                         try:
-                            msg = await asyncio.wait_for(ws.recv(), timeout=0.1)
-                            data = json.loads(msg)
+                            if aiohttp_ws:
+                                # aiohttp WebSocket API
+                                msg = await asyncio.wait_for(aiohttp_ws.receive(), timeout=0.1)
+                                if msg.type == aiohttp.WSMsgType.TEXT:
+                                    data = json.loads(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                                    logger.warning("[OB] aiohttp WebSocket closed by server")
+                                    break
+                                elif msg.type == aiohttp.WSMsgType.ERROR:
+                                    logger.error(f"[OB] aiohttp WebSocket error: {aiohttp_ws.exception()}")
+                                    break
+                                else:
+                                    continue  # Skip ping/pong/binary
+                            else:
+                                # websockets library API
+                                msg_text = await asyncio.wait_for(ws.recv(), timeout=0.1)
+                                data = json.loads(msg_text)
 
                             # Handle different message types
                             if isinstance(data, list):
@@ -612,29 +814,36 @@ class OrderbookStreamer:
                         break
 
                 self._ws = None
+                self._aiohttp_ws = None
 
             except Exception as e:
                 logger.error(f"CLOB WSS error: {type(e).__name__}: {e}")
                 self._wss_failure_count += 1
-                if not self._use_proxy:
-                    self._direct_failed_count += 1
-                    if self._direct_failed_count >= 2 and PROXY_SOCKS5_URL:
-                        logger.warning(f"[OB] Direct failed {self._direct_failed_count}x, trying SOCKS5 proxy...")
-                        self._use_proxy = True
                 # After MAX_WSS_FAILURES total failures, switch to REST polling
                 if self._wss_failure_count >= MAX_WSS_FAILURES:
                     logger.warning(f"[OB] ✓ WSS failed {self._wss_failure_count}x, activating REST polling fallback")
                     self._use_rest_fallback = True
                     await self._rest_polling_loop()
                     return  # Exit WSS stream loop
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
             finally:
-                # Clean up WebSocket connection
+                # Clean up WebSocket connections
                 if ws:
                     try:
                         await ws.close()
                     except:
                         pass
+                if aiohttp_ws:
+                    try:
+                        await aiohttp_ws.close()
+                    except:
+                        pass
+                if self._aiohttp_session:
+                    try:
+                        await self._aiohttp_session.close()
+                    except:
+                        pass
+                    self._aiohttp_session = None
 
     def _handle_book_update(self, data: dict):
         """Handle orderbook update message."""

@@ -6,13 +6,17 @@ Provides: funding rate, open interest, liquidations, mark price, CVD.
 """
 import asyncio
 import json
+import logging
 import os
+import aiohttp
 import requests
 import websockets
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from collections import deque
+
+logger = logging.getLogger(__name__)
 
 OKX_API = "https://www.okx.com"
 OKX_WSS = "wss://ws.okx.com:8443/ws/v5/public"
@@ -262,6 +266,128 @@ def compute_returns_from_candles(candles: List) -> Dict[str, float]:
     }
 
 
+# ============ ASYNC FETCH FUNCTIONS ============
+# These non-blocking versions use aiohttp to avoid event loop starvation.
+# The sync versions above are kept for backward compatibility.
+
+async def async_fetch_okx_funding(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch funding rate from OKX."""
+    inst_id = OKX_INSTRUMENTS.get(asset)
+    if not inst_id:
+        return None
+
+    try:
+        url = f"{OKX_API}/api/v5/public/funding-rate?instId={inst_id}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("data"):
+                    item = data["data"][0]
+                    funding_str = item.get("fundingRate", "0") or "0"
+                    next_str = item.get("nextFundingRate", "0") or "0"
+                    return {
+                        "funding_rate": float(funding_str),
+                        "next_funding_rate": float(next_str),
+                    }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OKX funding for {asset}")
+    except Exception as e:
+        print(f"Async OKX funding error for {asset}: {e}")
+    return None
+
+
+async def async_fetch_okx_ticker(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch ticker from OKX."""
+    inst_id = OKX_INSTRUMENTS.get(asset)
+    if not inst_id:
+        return None
+
+    try:
+        url = f"{OKX_API}/api/v5/market/ticker?instId={inst_id}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("data"):
+                    item = data["data"][0]
+                    return {
+                        "last_price": float(item.get("last", 0)),
+                        "volume_24h": float(item.get("volCcy24h", 0)),
+                    }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OKX ticker for {asset}")
+    except Exception as e:
+        print(f"Async OKX ticker error for {asset}: {e}")
+    return None
+
+
+async def async_fetch_okx_mark_price(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch mark price from OKX."""
+    inst_id = OKX_INSTRUMENTS.get(asset)
+    if not inst_id:
+        return None
+
+    try:
+        url = f"{OKX_API}/api/v5/public/mark-price?instId={inst_id}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("data"):
+                    item = data["data"][0]
+                    return {
+                        "mark_price": float(item.get("markPx", 0)),
+                    }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OKX mark price for {asset}")
+    except Exception as e:
+        print(f"Async OKX mark price error for {asset}: {e}")
+    return None
+
+
+async def async_fetch_okx_open_interest(session: aiohttp.ClientSession, asset: str) -> Optional[Dict]:
+    """Async fetch open interest from OKX."""
+    inst_id = OKX_INSTRUMENTS.get(asset)
+    if not inst_id:
+        return None
+
+    try:
+        url = f"{OKX_API}/api/v5/public/open-interest?instId={inst_id}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("data"):
+                    item = data["data"][0]
+                    return {
+                        "open_interest": float(item.get("oi", 0)),
+                        "open_interest_value": float(item.get("oiCcy", 0)),
+                    }
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OKX OI for {asset}")
+    except Exception as e:
+        print(f"Async OKX OI error for {asset}: {e}")
+    return None
+
+
+async def async_fetch_okx_candles(session: aiohttp.ClientSession, asset: str, bar: str = "1m", limit: int = 100) -> Optional[List]:
+    """Async fetch candles from OKX."""
+    inst_id = OKX_INSTRUMENTS.get(asset)
+    if not inst_id:
+        return None
+
+    try:
+        url = f"{OKX_API}/api/v5/market/candles?instId={inst_id}&bar={bar}&limit={limit}"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data.get("data"):
+                    # OKX returns newest first, reverse for chronological
+                    return list(reversed(data["data"]))
+    except asyncio.TimeoutError:
+        print(f"Async timeout fetching OKX candles for {asset}")
+    except Exception as e:
+        print(f"Async OKX candles error for {asset}: {e}")
+    return None
+
+
 class OKXFuturesStreamer:
     """Stream futures data from OKX."""
 
@@ -277,53 +403,86 @@ class OKXFuturesStreamer:
         return self.states.get(asset)
 
     async def _poll_rest_data(self):
-        """Periodically fetch REST data."""
-        while self.running:
-            for asset in self.assets:
-                state = self.states.get(asset)
-                if not state:
-                    continue
+        """Periodically fetch REST data using async HTTP.
 
-                # Funding rate
-                funding = fetch_okx_funding(asset)
-                if funding:
-                    state.funding_rate = funding["funding_rate"]
+        Uses aiohttp for non-blocking HTTP requests to avoid event loop starvation.
+        All requests for all assets run concurrently, completing in ~1-2 seconds
+        instead of 20+ seconds with sequential sync requests.
+        """
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=8)
+        timeout = aiohttp.ClientTimeout(total=10, connect=5)
 
-                # Mark price
-                mark = fetch_okx_mark_price(asset)
-                if mark:
-                    state.mark_price = mark["mark_price"]
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            logger.info("[OKX] REST polling started (async aiohttp)")
 
-                # Ticker (volume)
-                ticker = fetch_okx_ticker(asset)
-                if ticker:
-                    state.volume_24h = ticker["volume_24h"]
+            while self.running:
+                poll_start = datetime.now(timezone.utc)
 
-                # Open interest
-                oi = fetch_okx_open_interest(asset)
-                if oi:
-                    state.open_interest = oi["open_interest"]
-                    state.oi_history.append(oi["open_interest"])
-                    if len(state.oi_history) > 60:
-                        state.oi_history = state.oi_history[-60:]
+                # Build list of all async tasks for all assets
+                # Each task returns (type, asset, result)
+                tasks = []
+                for asset in self.assets:
+                    tasks.append(("funding", asset, async_fetch_okx_funding(session, asset)))
+                    tasks.append(("ticker", asset, async_fetch_okx_ticker(session, asset)))
+                    tasks.append(("mark", asset, async_fetch_okx_mark_price(session, asset)))
+                    tasks.append(("oi", asset, async_fetch_okx_open_interest(session, asset)))
+                    tasks.append(("candles", asset, async_fetch_okx_candles(session, asset, "1m", 65)))
 
-                # Candles for returns and volume_1h
-                candles = fetch_okx_candles(asset, "1m", 65)
-                if candles:
-                    returns = compute_returns_from_candles(candles)
-                    state.returns_1m = returns["1m"]
-                    state.returns_5m = returns["5m"]
-                    state.returns_10m = returns["10m"]
-                    state.returns_15m = returns["15m"]
-                    state.returns_1h = returns["1h"]
-                    state.realized_vol_1h = returns["realized_vol_1h"]
-                    # Sum volume from last 60 candles (1 hour)
-                    # OKX candle: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
-                    state.volume_1h = sum(float(c[6]) for c in candles[-60:])  # volCcy = base volume
+                # Run ALL requests concurrently (20 requests for 4 assets)
+                results = await asyncio.gather(*[t[2] for t in tasks], return_exceptions=True)
 
-                state.last_update = datetime.now(timezone.utc)
+                poll_elapsed = (datetime.now(timezone.utc) - poll_start).total_seconds()
 
-            await asyncio.sleep(10)
+                # Process results
+                success_count = 0
+                error_count = 0
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        error_count += 1
+                        continue
+
+                    task_type, asset, _ = tasks[i]
+                    state = self.states.get(asset)
+                    if not state:
+                        continue
+
+                    if result is None:
+                        error_count += 1
+                        continue
+
+                    success_count += 1
+
+                    if task_type == "funding":
+                        state.funding_rate = result.get("funding_rate", 0.0)
+                    elif task_type == "ticker":
+                        state.volume_24h = result.get("volume_24h", 0.0)
+                    elif task_type == "mark":
+                        state.mark_price = result.get("mark_price", 0.0)
+                    elif task_type == "oi":
+                        state.open_interest = result.get("open_interest", 0.0)
+                        state.oi_history.append(result.get("open_interest", 0.0))
+                        if len(state.oi_history) > 60:
+                            state.oi_history = state.oi_history[-60:]
+                    elif task_type == "candles":
+                        candles = result
+                        if candles:
+                            returns = compute_returns_from_candles(candles)
+                            state.returns_1m = returns["1m"]
+                            state.returns_5m = returns["5m"]
+                            state.returns_10m = returns["10m"]
+                            state.returns_15m = returns["15m"]
+                            state.returns_1h = returns["1h"]
+                            state.realized_vol_1h = returns["realized_vol_1h"]
+                            # Sum volume from last 60 candles (1 hour)
+                            state.volume_1h = sum(float(c[6]) for c in candles[-60:])
+
+                    state.last_update = datetime.now(timezone.utc)
+
+                # Log performance periodically
+                if poll_elapsed > 3.0 or success_count < len(tasks) // 2:
+                    logger.info(f"[OKX] REST poll: {success_count}/{len(tasks)} in {poll_elapsed:.1f}s")
+
+                await asyncio.sleep(10)
 
     async def _stream_trades(self):
         """Stream trades for CVD calculation."""
@@ -343,7 +502,7 @@ class OKXFuturesStreamer:
                         ]
                     }
                     await ws.send(json.dumps(sub_msg))
-                    print("✓ Connected to OKX trades WebSocket")
+                    logger.info("[OKX] ✓ Connected to OKX trades WebSocket")
 
                     while self.running:
                         try:
@@ -394,7 +553,7 @@ class OKXFuturesStreamer:
                             await ws.send("ping")
 
             except Exception as e:
-                print(f"OKX trade stream error: {e}, retrying in {backoff}s...")
+                logger.warning(f"[OKX] Trade stream error: {e}, retrying in {backoff}s...")
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)  # Exponential backoff
 
@@ -415,7 +574,7 @@ class OKXFuturesStreamer:
                         ]
                     }
                     await ws.send(json.dumps(sub_msg))
-                    print("✓ Connected to OKX liquidations WebSocket")
+                    logger.info("[OKX] ✓ Connected to OKX liquidations WebSocket")
 
                     while self.running:
                         try:
@@ -470,7 +629,7 @@ class OKXFuturesStreamer:
     async def stream(self):
         """Start all OKX data streams."""
         self.running = True
-        print("Starting OKX Futures streams...")
+        logger.info("[OKX] Starting OKX Futures streams...")
 
         # Initial data fetch
         for asset in self.assets:
@@ -481,7 +640,7 @@ class OKXFuturesStreamer:
                 if funding and mark:
                     state.funding_rate = funding["funding_rate"]
                     state.mark_price = mark["mark_price"]
-                    print(f"  {asset}: funding={state.funding_rate:.4%}, mark=${state.mark_price:,.2f}")
+                    logger.info(f"[OKX] {asset}: funding={state.funding_rate:.4%}, mark=${state.mark_price:,.2f}")
 
         await asyncio.gather(
             self._poll_rest_data(),

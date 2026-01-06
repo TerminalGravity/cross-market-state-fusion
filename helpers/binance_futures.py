@@ -6,10 +6,13 @@ Provides: funding rate, open interest, liquidations, mark price.
 """
 import asyncio
 import json
+import logging
 import os
 import aiohttp
 import requests
 import websockets
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional

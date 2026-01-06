@@ -5,20 +5,47 @@ This module handles live order placement, cancellation, and position tracking.
 Requires: pip install py-clob-client
 """
 import os
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Dict, List
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 # py-clob-client imports
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType
     from py_clob_client.order_builder.constants import BUY, SELL
+    from py_clob_client.exceptions import PolyApiException
     HAS_CLOB_CLIENT = True
+
+    # === CRITICAL: Monkey-patch py-clob-client to use SOCKS5 proxy ===
+    # This bypasses Cloudflare datacenter IP blocks on Fly.io
+    PROXY_SOCKS5_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
+    if PROXY_SOCKS5_URL:
+        try:
+            import httpx
+            from py_clob_client.http_helpers import helpers as clob_http_helpers
+
+            # Create SOCKS5-enabled httpx client
+            # httpx[socks] supports socks5:// URLs natively via httpcore-socks
+            proxy_client = httpx.Client(
+                http2=True,
+                proxy=PROXY_SOCKS5_URL,
+                timeout=httpx.Timeout(30.0, connect=15.0)
+            )
+            # Replace the module-level _http_client
+            clob_http_helpers._http_client = proxy_client
+            logger.info(f"[CLOB] ✓ Patched py-clob-client to use SOCKS5 proxy")
+        except Exception as e:
+            logger.warning(f"[CLOB] Failed to patch SOCKS5 proxy: {e}")
+
 except ImportError:
     HAS_CLOB_CLIENT = False
-    print("WARNING: py-clob-client not installed. Run: pip install py-clob-client")
+    PolyApiException = Exception  # Fallback
+    logger.warning("py-clob-client not installed. Run: pip install py-clob-client")
 
 
 class ExecutionMode(Enum):
@@ -127,7 +154,7 @@ class ClobExecutor:
         )
         # Derive API credentials (only need to do once, cached by library)
         self.client.set_api_creds(self.client.create_or_derive_api_creds())
-        print(f"[CLOB] Initialized client for {funder_address[:10]}...{funder_address[-6:]}")
+        logger.info(f"[CLOB] Initialized client for {funder_address[:10]}...{funder_address[-6:]}")
 
     def place_market_order(
         self,
@@ -186,23 +213,262 @@ class ClobExecutor:
                 self._update_position(token_id, side, amount, 0.0, asset)
 
             self.orders[order.order_id] = order
-            print(f"[CLOB] LIVE Market {side.value} ${amount:.2f} on {asset}: {order.status} (order_id={order.order_id})")
+            logger.info(f"[CLOB] LIVE Market {side.value} ${amount:.2f} on {asset}: {order.status} (order_id={order.order_id})")
             return order
+
+        except PolyApiException as e:
+            # Extract detailed error from Polymarket API
+            error_msg = getattr(e, 'error_msg', str(e))
+            status_code = getattr(e, 'status_code', 'N/A')
+            logger.error(f"[CLOB] LIVE Order REJECTED: status={status_code}, error={error_msg}")
+            logger.error(f"[CLOB] Order details: token_id={token_id[:20]}..., amount=${amount}, side={side.value}")
+            return None
 
         except Exception as e:
             import traceback
-            print(f"[CLOB] LIVE Order failed: {e}")
-            print(f"[CLOB] Full error traceback:\n{traceback.format_exc()}")
+            logger.error(f"[CLOB] LIVE Order failed: {e}")
+            logger.error(f"[CLOB] Traceback:\n{traceback.format_exc()}")
 
             # Try to extract error details from response
             error_details = str(e)
-            if hasattr(e, 'response'):
+            if hasattr(e, 'error_msg'):
+                error_details = f"{e} | error_msg: {e.error_msg}"
+            elif hasattr(e, 'response'):
                 try:
                     error_details = f"{e} | Response: {e.response.json()}"
                 except:
                     error_details = f"{e} | Response text: {getattr(e.response, 'text', 'N/A')}"
 
-            print(f"[CLOB] Error details: {error_details}")
+            logger.error(f"[CLOB] Error details: {error_details}")
+            return None
+
+    def place_sell_with_retry(
+        self,
+        token_id: str,
+        shares: float,
+        current_price: float,
+        asset: str = "UNKNOWN",
+        max_retries: int = 3
+    ) -> Optional[LiveOrder]:
+        """
+        Place a SELL order with retry logic for low-liquidity markets.
+
+        Strategy:
+        1. Try FOK market order (fills instantly or fails)
+        2. If FOK fails, try aggressive GTC limit order at discounted price
+        3. Wait briefly and check if limit order filled
+
+        Args:
+            token_id: Polymarket token ID
+            shares: Number of shares to sell
+            current_price: Current market probability (0.01-0.99)
+            asset: Asset name for logging
+            max_retries: Maximum retry attempts
+
+        Returns:
+            LiveOrder if any order succeeded, None if all failed
+        """
+        if self.mode == ExecutionMode.PAPER:
+            return self._simulate_market_order(token_id, shares, OrderSide.SELL, asset)
+
+        # Attempt 1: FOK market order
+        order = self.place_market_order(token_id, shares, OrderSide.SELL, asset)
+        if order and order.status == "matched":
+            return order
+
+        logger.warning(f"[CLOB] FOK failed for {asset}, trying aggressive limit order...")
+
+        # Attempt 2: GTC limit order at discounted price (to ensure fill)
+        # If current price is 0.50, sell at 0.48 (4% discount) to attract buyers
+        discount = 0.04
+        limit_price = max(0.01, current_price - discount)
+
+        # Round to 2 decimal places (Polymarket requirement)
+        limit_price = round(limit_price, 2)
+
+        try:
+            order_side = SELL
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=limit_price,
+                size=shares,
+                side=order_side
+            )
+
+            signed_order = self.client.create_order(order_args)
+            response = self.client.post_order(signed_order, OrderType.GTC)
+
+            order = LiveOrder(
+                order_id=response.get("orderID", f"limit_sell_{self.total_orders}"),
+                token_id=token_id,
+                side=OrderSide.SELL,
+                price=limit_price,
+                size=shares,
+                order_type="GTC",
+                status=response.get("status", "UNKNOWN"),
+                execution_type="live",
+                clob_response=response
+            )
+
+            logger.info(
+                f"[CLOB] LIVE Limit SELL {shares:.4f} @ {limit_price:.2f} on {asset}: "
+                f"{order.status} (order_id={order.order_id})"
+            )
+
+            # If matched immediately, great!
+            if order.status == "matched":
+                self.filled_orders += 1
+                self.total_volume += shares * limit_price
+                self.orders[order.order_id] = order
+                return order
+
+            # If order is live (pending), wait briefly and check status
+            if order.status == "live":
+                import time
+                time.sleep(2)  # Wait 2 seconds for fill
+
+                # Check if order filled via API
+                try:
+                    order_status = self.client.get_order(order.order_id)
+                    if order_status and order_status.get("status") == "matched":
+                        order.status = "matched"
+                        self.filled_orders += 1
+                        self.total_volume += shares * limit_price
+                        self.orders[order.order_id] = order
+                        logger.info(f"[CLOB] Limit order filled after wait: {order.order_id}")
+                        return order
+                    else:
+                        # Cancel unfilled order to avoid stale orders
+                        logger.warning(f"[CLOB] Limit order still pending, cancelling...")
+                        try:
+                            self.client.cancel(order.order_id)
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"[CLOB] Failed to check order status: {e}")
+
+            self.orders[order.order_id] = order
+            return order
+
+        except Exception as e:
+            logger.error(f"[CLOB] Limit sell failed: {e}")
+            return None
+
+    def place_buy_with_retry(
+        self,
+        token_id: str,
+        amount_dollars: float,
+        current_price: float,
+        asset: str = "UNKNOWN",
+        max_retries: int = 2
+    ) -> Optional[LiveOrder]:
+        """
+        Place a BUY order with retry logic for low-liquidity markets.
+
+        Strategy:
+        1. Try FOK market order (fills instantly or fails)
+        2. If FOK fails, try aggressive GTC limit order at premium price
+        3. Wait briefly and check if limit order filled
+
+        Args:
+            token_id: Polymarket token ID
+            amount_dollars: Dollar amount to spend
+            current_price: Current market probability (0.01-0.99)
+            asset: Asset name for logging
+            max_retries: Maximum retry attempts
+
+        Returns:
+            LiveOrder if any order succeeded, None if all failed
+        """
+        if self.mode == ExecutionMode.PAPER:
+            return self._simulate_market_order(token_id, amount_dollars, OrderSide.BUY, asset)
+
+        # Attempt 1: FOK market order
+        order = self.place_market_order(token_id, amount_dollars, OrderSide.BUY, asset)
+        if order and order.status == "matched":
+            return order
+
+        logger.warning(f"[CLOB] FOK BUY failed for {asset}, trying aggressive limit order...")
+
+        # Attempt 2: GTC limit order at premium price (to ensure fill)
+        # If current price is 0.50, buy at 0.54 (4% premium) to attract sellers
+        premium = 0.04
+        limit_price = min(0.99, current_price + premium)
+
+        # Round to 2 decimal places (Polymarket requirement)
+        limit_price = round(limit_price, 2)
+
+        # Calculate shares from dollar amount
+        shares = amount_dollars / limit_price
+
+        try:
+            order_side = BUY
+
+            order_args = OrderArgs(
+                token_id=token_id,
+                price=limit_price,
+                size=shares,
+                side=order_side
+            )
+
+            signed_order = self.client.create_order(order_args)
+            response = self.client.post_order(signed_order, OrderType.GTC)
+
+            order = LiveOrder(
+                order_id=response.get("orderID", f"limit_buy_{self.total_orders}"),
+                token_id=token_id,
+                side=OrderSide.BUY,
+                price=limit_price,
+                size=shares,
+                order_type="GTC",
+                status=response.get("status", "UNKNOWN"),
+                execution_type="live",
+                clob_response=response
+            )
+
+            logger.info(
+                f"[CLOB] LIVE Limit BUY {shares:.4f} @ {limit_price:.2f} on {asset}: "
+                f"{order.status} (order_id={order.order_id})"
+            )
+
+            # If matched immediately, great!
+            if order.status == "matched":
+                self.filled_orders += 1
+                self.total_volume += shares * limit_price
+                self.orders[order.order_id] = order
+                return order
+
+            # If order is live (pending), wait briefly and check status
+            if order.status == "live":
+                import time
+                time.sleep(2)  # Wait 2 seconds for fill
+
+                # Check if order filled via API
+                try:
+                    order_status = self.client.get_order(order.order_id)
+                    if order_status and order_status.get("status") == "matched":
+                        order.status = "matched"
+                        self.filled_orders += 1
+                        self.total_volume += shares * limit_price
+                        self.orders[order.order_id] = order
+                        logger.info(f"[CLOB] Limit BUY order filled after wait: {order.order_id}")
+                        return order
+                    else:
+                        # Cancel unfilled order to avoid stale orders
+                        logger.warning(f"[CLOB] Limit BUY order still pending, cancelling...")
+                        try:
+                            self.client.cancel(order.order_id)
+                        except:
+                            pass
+                except Exception as e:
+                    logger.warning(f"[CLOB] Failed to check order status: {e}")
+
+            self.orders[order.order_id] = order
+            return order
+
+        except Exception as e:
+            logger.error(f"[CLOB] Limit buy failed: {e}")
             return None
 
     def place_limit_order(

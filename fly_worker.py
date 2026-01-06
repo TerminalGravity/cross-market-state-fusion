@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-Railway Worker: 24/7 Paper Trading Service
+Fly.io Worker: 24/7 Paper Trading Service
 
 Runs the RL inference loop, manages WebSocket streams,
 persists to PostgreSQL, and sends Discord alerts.
 
 Usage:
     # Paper trading (default)
-    python railway_worker.py
+    python fly_worker.py
 
     # Live trading (requires POLYMARKET_PRIVATE_KEY)
-    TRADING_MODE=live python railway_worker.py
+    TRADING_MODE=live python fly_worker.py
 
 Environment Variables:
     DATABASE_URL: PostgreSQL connection URL
@@ -33,14 +33,39 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure residential proxy for Polymarket CLOB API (bypasses Cloudflare)
-# Only apply to CLOB requests - we'll handle this in clob_executor
-PROXY_URL = os.getenv("RESIDENTIAL_PROXY_URL")
-if PROXY_URL:
-    # Set for requests library (used by py-clob-client)
-    os.environ["HTTP_PROXY"] = PROXY_URL
-    os.environ["HTTPS_PROXY"] = PROXY_URL
-    print(f"[PROXY] Configured residential proxy: {PROXY_URL.split('@')[-1] if '@' in PROXY_URL else 'configured'}")
+# Configure residential SOCKS5 proxy for Polymarket CLOB API (bypasses Cloudflare)
+# Format: socks5://user:pass@host:port
+SOCKS5_PROXY_URL = os.getenv("RESIDENTIAL_SOCKS5_URL")
+if SOCKS5_PROXY_URL:
+    print(f"[PROXY] SOCKS5 proxy configured: {SOCKS5_PROXY_URL.split('@')[-1] if '@' in SOCKS5_PROXY_URL else 'configured'}")
+
+    # CRITICAL: Monkey-patch py-clob-client's httpx client to use SOCKS5 proxy
+    # The library creates httpx.Client() at import time BEFORE we can configure it
+    # So we must replace it with a proxy-aware client AFTER import
+    def _patch_clob_client_proxy():
+        try:
+            import httpx
+            from py_clob_client.http_helpers import helpers as clob_helpers
+
+            # Create new httpx client WITH SOCKS5 proxy
+            # httpx[socks] must be installed for this to work
+            proxied_client = httpx.Client(
+                http2=True,
+                proxy=SOCKS5_PROXY_URL,
+                timeout=httpx.Timeout(30.0)
+            )
+
+            # Replace the module-level singleton
+            clob_helpers._http_client = proxied_client
+            print(f"[PROXY] ✓ Patched py-clob-client with SOCKS5 proxy")
+            return True
+        except Exception as e:
+            print(f"[PROXY] WARNING: Failed to patch py-clob-client: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    _patch_clob_client_proxy()
 
 import json
 
@@ -57,6 +82,8 @@ from helpers.binance_wss import BinanceStreamer
 # Use OKX for futures data - datacenter-friendly (Binance blocks cloud IPs)
 from helpers.okx_futures import OKXFuturesStreamer as FuturesStreamer
 from helpers.clob_executor import create_executor, OrderSide
+from helpers.position_redeemer import PositionRedeemer
+from helpers.autonomy_manager import AutonomyManager
 from strategies.base import MarketState, Action
 
 # Conditional import: Use NumPy on Linux, MLX on macOS
@@ -78,13 +105,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger("worker")
 
+# Quiet down noisy loggers (httpx logs every REST request)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 
 @dataclass
 class Position:
     """Active trading position."""
     asset: str
     side: str = ""
-    size: float = 0.0
+    size: float = 0.0  # Dollar amount
+    shares: float = 0.0  # Actual share count (for selling)
     entry_price: float = 0.0
     entry_binance_price: float = 0.0
     token_id: str = ""
@@ -99,6 +131,7 @@ class Position:
             "asset": self.asset,
             "side": self.side,
             "size": self.size,
+            "shares": self.shares,
             "entry_price": self.entry_price,
             "entry_binance_price": self.entry_binance_price,
             "token_id": self.token_id,
@@ -118,6 +151,7 @@ class Position:
             asset=data["asset"],
             side=data.get("side", ""),
             size=data.get("size", 0.0),
+            shares=data.get("shares", 0.0),
             entry_price=data.get("entry_price", 0.0),
             entry_binance_price=data.get("entry_binance_price", 0.0),
             token_id=data.get("token_id", ""),
@@ -126,6 +160,50 @@ class Position:
             trade_id=data.get("trade_id"),
             action_probs=data.get("action_probs", {}),
         )
+
+
+# CTF Contract for querying on-chain token balances
+CTF_CONTRACT = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+CTF_BALANCE_ABI = [{'inputs':[{'name':'account','type':'address'},{'name':'id','type':'uint256'}],'name':'balanceOf','outputs':[{'name':'','type':'uint256'}],'stateMutability':'view','type':'function'}]
+
+
+async def get_onchain_shares(token_id: str, wallet_address: str, rpc_url: str = "https://polygon-rpc.com") -> float:
+    """
+    Query on-chain balance for a specific position token.
+
+    Returns the actual share count held on-chain, which may differ from
+    calculated shares due to slippage, fees, or partial fills.
+
+    Args:
+        token_id: Polymarket ERC1155 token ID
+        wallet_address: Wallet address to check
+        rpc_url: Polygon RPC endpoint
+
+    Returns:
+        Share count (0 if error or not found)
+    """
+    try:
+        from web3 import Web3
+
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        ctf = w3.eth.contract(
+            address=Web3.to_checksum_address(CTF_CONTRACT),
+            abi=CTF_BALANCE_ABI
+        )
+
+        balance = await asyncio.to_thread(
+            ctf.functions.balanceOf(
+                Web3.to_checksum_address(wallet_address),
+                int(token_id)
+            ).call
+        )
+
+        # CTF tokens use 6 decimals
+        return balance / 1e6
+
+    except Exception as e:
+        logger.error(f"Failed to query on-chain balance for token {token_id[:20]}...: {e}")
+        return 0.0
 
 
 class TradingWorker:
@@ -166,6 +244,11 @@ class TradingWorker:
         self.transfer_executor: Optional[Any] = None
         self.profit_monitor: Optional[Any] = None
         self.initial_balance: float = 0.0
+
+        # Autonomy components (auto-redemption, health monitoring)
+        self.position_redeemer: Optional[PositionRedeemer] = None
+        self.autonomy_manager: Optional[AutonomyManager] = None
+        self.redemption_enabled = False
 
         # Executors (dual mode: both paper and live)
         self.paper_executor = create_executor(live=False)
@@ -219,11 +302,18 @@ class TradingWorker:
         self.position_timeout_minutes = 2  # Force close 2 min before expiry
         self.position_max_age_seconds = 840  # 14 minutes max (for 15-min markets)
 
+        # Take-profit / Stop-loss thresholds (override RL when hit)
+        # Binary markets: lock in gains before resolution swing
+        self.tp_threshold = 2.00   # +200% → force sell (e.g., 10¢→30¢, locks 3x gain)
+        self.sl_threshold = -0.50  # -50% → force sell (prevents -100% wipeout)
+        self.tp_sl_enabled = True  # Enable TP/SL safety net
+
         # Control
         self.running = False
         self.shutdown_event = asyncio.Event()
 
         logger.info(f"TradingWorker initialized (dual_mode={self.dual_mode}, live_enabled={self.live_enabled})")
+        logger.info(f"TP/SL safety net: enabled={self.tp_sl_enabled}, TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -321,6 +411,42 @@ class TradingWorker:
             except Exception as e:
                 logger.error(f"✗ Profit transfer initialization failed: {e}")
                 self.profit_transfer_enabled = False
+
+        # Initialize auto-redemption system (LIVE mode only)
+        if self.live_enabled and self.live_session_id:
+            try:
+                rpc_url = os.getenv("POLYGON_RPC_URL")
+                hot_wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS")
+                private_key = os.getenv("POLYMARKET_PRIVATE_KEY")
+                discord_webhook = os.getenv("DISCORD_WEBHOOK_URL")
+
+                if rpc_url and hot_wallet and private_key:
+                    # Position redeemer for auto-claiming resolved markets
+                    self.position_redeemer = PositionRedeemer(
+                        rpc_url=rpc_url,
+                        wallet_address=hot_wallet,
+                        private_key=private_key,
+                        discord_webhook=discord_webhook
+                    )
+
+                    # Autonomy manager for health checks
+                    self.autonomy_manager = AutonomyManager(
+                        rpc_url=rpc_url,
+                        wallet_address=hot_wallet,
+                        private_key=private_key,
+                        discord_webhook=discord_webhook
+                    )
+
+                    self.redemption_enabled = True
+                    logger.info("✓ Auto-redemption enabled (every 30 min)")
+                else:
+                    logger.warning(
+                        "Auto-redemption disabled: missing POLYGON_RPC_URL, "
+                        "POLYMARKET_FUNDER_ADDRESS, or POLYMARKET_PRIVATE_KEY"
+                    )
+            except Exception as e:
+                logger.error(f"✗ Auto-redemption initialization failed: {e}")
+                self.redemption_enabled = False
 
     async def _recover_session(self) -> bool:
         """Attempt to recover from crashed sessions (dual-mode aware)."""
@@ -579,8 +705,8 @@ class TradingWorker:
             )
         )
 
-        # Execute live if enabled
-        if self.live_enabled and self.live_executor and self.live_session_id:
+        # Execute live if enabled (dual_mode OR live_enabled)
+        if (self.live_enabled or self.dual_mode) and self.live_executor and self.live_session_id:
             tasks.append(
                 self._execute_action_single(
                     cid, market, action, state, probs, confidence,
@@ -627,17 +753,55 @@ class TradingWorker:
             return
 
         if action == Action.BUY and (not pos or pos.size == 0):
+            # === LIQUIDITY & CONFIDENCE FILTERS (LIVE MODE ONLY) ===
+            if mode == 'live':
+                # Skip if spread too wide (low liquidity indicator)
+                MAX_SPREAD = 0.08  # 8% max spread
+                if state.spread > MAX_SPREAD:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - spread {state.spread*100:.1f}% > {MAX_SPREAD*100:.0f}% max"
+                    )
+                    return
+
+                # Skip if confidence too low
+                MIN_CONFIDENCE = 0.40  # 40% minimum confidence
+                if confidence < MIN_CONFIDENCE:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - confidence {confidence*100:.0f}% < {MIN_CONFIDENCE*100:.0f}% min"
+                    )
+                    return
+
             # Open position
             amount = self.trade_size * 0.5
             binance_price = self.price_streamer.get_price(market.asset)
 
+            # Skip if order would result in < 5 shares (Polymarket minimum)
+            if mode == 'live':
+                MIN_SHARES_ORDER = 5.0
+                expected_shares = amount / state.prob if state.prob > 0 else 0
+                if expected_shares < MIN_SHARES_ORDER:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - {expected_shares:.1f} shares < {MIN_SHARES_ORDER} minimum "
+                        f"(${amount:.2f} @ {state.prob*100:.1f}%)"
+                    )
+                    return
+
             # *** CRITICAL: Actually execute the order on Polymarket ***
-            order = executor.place_market_order(
-                token_id=market.token_up,
-                amount=amount,
-                side=OrderSide.BUY,
-                asset=market.asset
-            )
+            # Use retry logic for LIVE mode to handle low liquidity
+            if mode == 'live':
+                order = executor.place_buy_with_retry(
+                    token_id=market.token_up,
+                    amount_dollars=amount,
+                    current_price=state.prob,
+                    asset=market.asset
+                )
+            else:
+                order = executor.place_market_order(
+                    token_id=market.token_up,
+                    amount=amount,
+                    side=OrderSide.BUY,
+                    asset=market.asset
+                )
 
             # For live mode, verify order was successful
             if mode == 'live' and (not order or order.status != "matched"):
@@ -665,11 +829,84 @@ class TradingWorker:
                 clob_response=order.clob_response if order else None
             )
 
+            # For LIVE mode: query actual shares received after fill
+            actual_shares = 0.0
+            if mode == 'live' and order and order.status == "matched":
+                wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
+                if wallet:
+                    # Wait for Polygon block confirmation (~2 blocks)
+                    await asyncio.sleep(5)
+                    actual_shares = await get_onchain_shares(market.token_up, wallet)
+                    logger.info(
+                        f"[LIVE] BUY filled - on-chain shares: {actual_shares:.4f} "
+                        f"(expected: {amount / state.prob:.4f})"
+                    )
+
+                    # CRITICAL: Check for dust fills that can't be sold
+                    # Polymarket requires minimum order size (~$0.10 worth)
+                    MIN_SHARES_THRESHOLD = 1.0  # Minimum shares to track a position
+                    if actual_shares < MIN_SHARES_THRESHOLD:
+                        logger.warning(
+                            f"[LIVE] Dust fill detected for {market.asset}: "
+                            f"{actual_shares:.4f} shares < {MIN_SHARES_THRESHOLD} minimum. "
+                            f"Trying aggressive GTC limit order..."
+                        )
+
+                        # RETRY: Place aggressive GTC limit order at 4% premium
+                        premium = 0.04
+                        limit_price = min(0.99, state.prob + premium)
+                        limit_price = round(limit_price, 2)
+                        shares_to_buy = amount / limit_price
+
+                        retry_order = executor.place_limit_order(
+                            token_id=market.token_up,
+                            price=limit_price,
+                            size=shares_to_buy,
+                            side=OrderSide.BUY,
+                            order_type="GTC",
+                            asset=market.asset
+                        )
+
+                        if retry_order:
+                            logger.info(
+                                f"[LIVE] GTC limit BUY {shares_to_buy:.4f} @ {limit_price:.2f} "
+                                f"on {market.asset}: {retry_order.status}"
+                            )
+
+                            # Wait for fill and cancel if not filled
+                            if retry_order.status == "live":
+                                await asyncio.sleep(3)  # Wait 3 seconds for fill
+
+                                # Cancel to avoid stale orders
+                                try:
+                                    if executor.client:
+                                        executor.client.cancel(retry_order.order_id)
+                                        logger.info(f"[LIVE] Cancelled unfilled GTC order")
+                                except Exception as e:
+                                    logger.debug(f"[LIVE] Failed to cancel: {e}")
+
+                            # Re-check on-chain balance after retry
+                            await asyncio.sleep(1)
+                            actual_shares = await get_onchain_shares(market.token_up, wallet)
+                            logger.info(
+                                f"[LIVE] After retry - on-chain shares: {actual_shares:.4f}"
+                            )
+
+                            if actual_shares < MIN_SHARES_THRESHOLD:
+                                logger.warning(
+                                    f"[LIVE] Still dust after retry. Position not tracked."
+                                )
+                                return
+                        else:
+                            logger.warning(f"[LIVE] GTC retry failed. Position not tracked.")
+                            return
+
             # Update local state
             positions[cid] = Position(
                 asset=market.asset,
                 side="UP",
                 size=amount,
+                shares=actual_shares,  # Store actual on-chain shares
                 entry_price=state.prob,
                 entry_binance_price=binance_price,
                 token_id=market.token_up,
@@ -714,15 +951,44 @@ class TradingWorker:
             binance_price = self.price_streamer.get_price(market.asset)
 
             # *** CRITICAL: Actually execute the sell order on Polymarket ***
-            # Calculate shares to sell (amount / entry_price gives shares)
-            shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            # For LIVE mode: query ACTUAL on-chain shares (not calculated)
+            # This avoids "not enough balance" errors from slippage/fees
+            if mode == 'live' and pos.token_id:
+                wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
+                if wallet:
+                    shares_to_sell = await get_onchain_shares(pos.token_id, wallet)
+                    if shares_to_sell <= 0:
+                        logger.warning(
+                            f"[LIVE] No on-chain shares for {market.asset} - clearing ghost position"
+                        )
+                        positions[cid] = Position(asset=market.asset)
+                        return
+                    logger.info(
+                        f"[LIVE] On-chain shares for {market.asset}: {shares_to_sell:.4f} "
+                        f"(calculated: {pos.size / pos.entry_price:.4f})"
+                    )
+                else:
+                    shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            else:
+                # Paper mode: use calculated shares
+                shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+
             if shares_to_sell > 0:
-                order = executor.place_market_order(
-                    token_id=pos.token_id,
-                    amount=shares_to_sell,  # For SELL, amount is shares
-                    side=OrderSide.SELL,
-                    asset=market.asset
-                )
+                # Use retry-enabled sell for LIVE mode to handle low liquidity
+                if mode == 'live':
+                    order = executor.place_sell_with_retry(
+                        token_id=pos.token_id,
+                        shares=shares_to_sell,
+                        current_price=state.prob,
+                        asset=market.asset
+                    )
+                else:
+                    order = executor.place_market_order(
+                        token_id=pos.token_id,
+                        amount=shares_to_sell,  # For SELL, amount is shares
+                        side=OrderSide.SELL,
+                        asset=market.asset
+                    )
 
                 # For live mode, verify order was successful
                 if mode == 'live' and (not order or order.status != "matched"):
@@ -730,6 +996,13 @@ class TradingWorker:
                         f"[LIVE] Sell order failed for {market.asset}: "
                         f"{order.status if order else 'no response'}"
                     )
+                    # CRITICAL: Clear ghost position to stop infinite retry loop
+                    # If SELL fails after retry with limit order, shares may be stuck
+                    logger.warning(
+                        f"[LIVE] Clearing ghost position for {market.asset} "
+                        f"(sell failed after retry attempts)"
+                    )
+                    positions[cid] = Position(asset=market.asset)
                     return  # Don't record failed trades
 
             # Record to database
@@ -826,13 +1099,28 @@ class TradingWorker:
                     live_checked += 1
                     market = self.markets.get(cid)
                     if not market:
-                        logger.warning(f"[SAFETY] LIVE {pos.asset}: Market not found (cid={cid[:8]}...)")
+                        # Market expired/rotated - cleanup stale position
+                        await self._cleanup_stale_position(
+                            cid, pos, mode='live',
+                            positions=self.live_positions,
+                            session_id=self.live_session_id
+                        )
+                        live_closed += 1
                         continue
 
-                    # Check if position needs emergency close
-                    should_close, reason = self._should_emergency_close(pos, market, now)
+                    # Get current price from orderbook for TP/SL check
+                    current_price = None
+                    if pos.side == "UP":
+                        ob = self.orderbook_streamer.get_orderbook(cid, "UP")
+                    else:
+                        ob = self.orderbook_streamer.get_orderbook(cid, "DOWN")
+                    if ob and ob.mid_price:
+                        current_price = ob.mid_price
+
+                    # Check if position needs emergency close (including TP/SL)
+                    should_close, reason = self._should_emergency_close(pos, market, now, current_price)
                     if should_close:
-                        logger.critical(f"[SAFETY] 🚨 TIMEOUT TRIGGERED: LIVE {pos.asset} - {reason}")
+                        logger.critical(f"[SAFETY] 🚨 TRIGGERED: LIVE {pos.asset} - {reason}")
                         live_closed += 1
                         await self._emergency_close_position(
                             cid, market, pos,
@@ -860,12 +1148,27 @@ class TradingWorker:
                     paper_checked += 1
                     market = self.markets.get(cid)
                     if not market:
-                        logger.warning(f"[SAFETY] PAPER {pos.asset}: Market not found (cid={cid[:8]}...)")
+                        # Market expired/rotated - cleanup stale position
+                        await self._cleanup_stale_position(
+                            cid, pos, mode='paper',
+                            positions=self.paper_positions,
+                            session_id=self.paper_session_id
+                        )
+                        paper_closed += 1
                         continue
 
-                    should_close, reason = self._should_emergency_close(pos, market, now)
+                    # Get current price from orderbook for TP/SL check
+                    current_price = None
+                    if pos.side == "UP":
+                        ob = self.orderbook_streamer.get_orderbook(cid, "UP")
+                    else:
+                        ob = self.orderbook_streamer.get_orderbook(cid, "DOWN")
+                    if ob and ob.mid_price:
+                        current_price = ob.mid_price
+
+                    should_close, reason = self._should_emergency_close(pos, market, now, current_price)
                     if should_close:
-                        logger.warning(f"[SAFETY] TIMEOUT: PAPER {pos.asset} - {reason}")
+                        logger.warning(f"[SAFETY] TRIGGERED: PAPER {pos.asset} - {reason}")
                         paper_closed += 1
                         await self._emergency_close_position(
                             cid, market, pos,
@@ -894,7 +1197,8 @@ class TradingWorker:
         self,
         pos: Position,
         market: Market,
-        now: datetime
+        now: datetime,
+        current_price: float = None
     ) -> tuple[bool, str]:
         """
         Determine if a position should be emergency closed.
@@ -920,7 +1224,63 @@ class TradingWorker:
             if staleness > self.orderbook_stale_threshold:
                 return True, f"stale_data ({staleness:.0f}s without update)"
 
+        # 4. Take-profit / Stop-loss (override RL model decision)
+        if self.tp_sl_enabled and current_price is not None and pos.entry_price > 0:
+            # Calculate PnL percentage
+            if pos.side == "UP":
+                pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+            else:  # DOWN
+                pnl_pct = ((1 - current_price) - pos.entry_price) / pos.entry_price
+
+            # Take-profit: lock in gains
+            if pnl_pct >= self.tp_threshold:
+                return True, f"take_profit ({pnl_pct*100:+.1f}% >= {self.tp_threshold*100:.0f}%)"
+
+            # Stop-loss: cut losses
+            if pnl_pct <= self.sl_threshold:
+                return True, f"stop_loss ({pnl_pct*100:+.1f}% <= {self.sl_threshold*100:.0f}%)"
+
         return False, ""
+
+    async def _cleanup_stale_position(
+        self,
+        cid: str,
+        pos: Position,
+        mode: str,
+        positions: Dict[str, Position],
+        session_id: str
+    ) -> None:
+        """
+        Cleanup a position whose market no longer exists.
+
+        Called when 15-min markets rotate and old positions become orphaned.
+        Records as closed with 'stale_market' reason and removes from memory.
+        """
+        try:
+            duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
+
+            # Record to database (assume 0 PnL - market expired, can't determine outcome)
+            if pos.trade_id:
+                await self.db.record_trade_close(
+                    trade_id=pos.trade_id,
+                    exit_price=pos.entry_price,  # Use entry price (unknown exit)
+                    exit_binance_price=0.0,
+                    exit_reason="stale_market",
+                    pnl=0.0,  # Unknown - market expired
+                    duration_seconds=duration
+                )
+
+            # Remove from in-memory positions
+            if cid in positions:
+                del positions[cid]
+
+            logger.info(
+                f"[SAFETY] Cleaned up stale {mode.upper()} {pos.asset} position "
+                f"(cid={cid[:8]}..., age={duration}s)"
+            )
+
+        except Exception as e:
+            logger.error(f"[SAFETY] Failed to cleanup stale position: {e}", exc_info=True)
 
     async def _emergency_close_position(
         self,
@@ -952,16 +1312,37 @@ class TradingWorker:
             duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
             binance_price = self.price_streamer.get_price(market.asset)
 
-            # Execute the sell order
-            shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            # Execute the sell order - get actual shares for live mode
+            if mode == 'live' and pos.token_id:
+                wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
+                if wallet:
+                    shares_to_sell = await get_onchain_shares(pos.token_id, wallet)
+                    if shares_to_sell <= 0:
+                        logger.warning(f"[LIVE] No on-chain shares for {market.asset} - clearing ghost position")
+                        positions[cid] = Position(asset=market.asset)
+                        return
+                else:
+                    shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            else:
+                shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+
             if shares_to_sell > 0 and executor:
                 try:
-                    order = executor.place_market_order(
-                        token_id=pos.token_id,
-                        amount=shares_to_sell,
-                        side=OrderSide.SELL,
-                        asset=market.asset
-                    )
+                    # Use retry logic for LIVE mode to handle low liquidity
+                    if mode == 'live':
+                        order = executor.place_sell_with_retry(
+                            token_id=pos.token_id,
+                            shares=shares_to_sell,
+                            current_price=exit_price,
+                            asset=market.asset
+                        )
+                    else:
+                        order = executor.place_market_order(
+                            token_id=pos.token_id,
+                            amount=shares_to_sell,
+                            side=OrderSide.SELL,
+                            asset=market.asset
+                        )
                     logger.info(f"[{mode.upper()}] Emergency sell executed: {order.status if order else 'submitted'}")
                 except Exception as e:
                     logger.error(f"[{mode.upper()}] Emergency sell order failed: {e}")
@@ -1206,6 +1587,20 @@ class TradingWorker:
             if self.profit_transfer_enabled and self.profit_monitor:
                 stream_tasks.append(asyncio.create_task(self.profit_monitor.start()))
 
+            # Add auto-redemption loop if enabled (checks every 30 min)
+            if self.redemption_enabled and self.position_redeemer:
+                stream_tasks.append(
+                    asyncio.create_task(self.position_redeemer.run_periodic_redemption(30))
+                )
+                logger.info("[AUTONOMY] Auto-redemption loop started (30 min interval)")
+
+            # Add autonomy health check loop if enabled
+            if self.autonomy_manager:
+                stream_tasks.append(
+                    asyncio.create_task(self.autonomy_manager.run_maintenance_loop(300))
+                )
+                logger.info("[AUTONOMY] Health monitoring loop started (5 min interval)")
+
             last_refresh = datetime.now(timezone.utc)
             last_status = datetime.now(timezone.utc)
 
@@ -1295,6 +1690,14 @@ class TradingWorker:
         # Stop profit monitor
         if self.profit_monitor:
             self.profit_monitor.stop()
+
+        # Stop autonomy manager
+        if self.autonomy_manager:
+            self.autonomy_manager.stop()
+
+        # Stop position redeemer
+        if self.position_redeemer:
+            self.position_redeemer.running = False
 
         # Cancel background tasks
         for task in tasks:
