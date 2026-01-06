@@ -2,6 +2,7 @@
 """
 Binance Futures data for high-alpha features.
 
+Uses HiFi proxy system for zero Cloudflare blocks via residential SOCKS5.
 Provides: funding rate, open interest, liquidations, mark price.
 """
 import asyncio
@@ -29,10 +30,8 @@ except ImportError:
 BINANCE_FUTURES_API = "https://fapi1.binance.com"  # Asia endpoint
 BINANCE_FUTURES_WSS = "wss://fstream1.binance.com"  # Asia WSS endpoint
 
-# Residential proxy for bypassing datacenter IP blocks
-# Format: socks5://user:pass@host:port
-# Use same env var as orderbook_wss.py for consistency
-PROXY_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
+# Import proxy URL from centralized HiFi proxy manager
+from helpers.hifi_proxy import PROXY_SOCKS5_URL as PROXY_URL
 
 # Asset to futures symbol mapping
 FUTURES_SYMBOLS = {

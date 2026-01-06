@@ -2,6 +2,8 @@
 Polymarket CLOB order execution via py-clob-client.
 
 This module handles live order placement, cancellation, and position tracking.
+Uses HiFi proxy system for zero Cloudflare blocks.
+
 Requires: pip install py-clob-client
 """
 import os
@@ -13,7 +15,18 @@ from enum import Enum
 
 logger = logging.getLogger(__name__)
 
-# py-clob-client imports
+# HiFi Proxy Manager - centralized proxy configuration
+_proxy_manager = None
+
+def _get_proxy_manager():
+    """Lazy-load proxy manager to avoid circular imports."""
+    global _proxy_manager
+    if _proxy_manager is None:
+        from helpers.hifi_proxy import get_proxy_manager
+        _proxy_manager = get_proxy_manager()
+    return _proxy_manager
+
+# py-clob-client imports with HiFi proxy patching
 try:
     from py_clob_client.client import ClobClient
     from py_clob_client.clob_types import OrderArgs, MarketOrderArgs, OrderType
@@ -21,26 +34,13 @@ try:
     from py_clob_client.exceptions import PolyApiException
     HAS_CLOB_CLIENT = True
 
-    # === CRITICAL: Monkey-patch py-clob-client to use SOCKS5 proxy ===
-    # This bypasses Cloudflare datacenter IP blocks on Fly.io
-    PROXY_SOCKS5_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
-    if PROXY_SOCKS5_URL:
-        try:
-            import httpx
-            from py_clob_client.http_helpers import helpers as clob_http_helpers
-
-            # Create SOCKS5-enabled httpx client
-            # httpx[socks] supports socks5:// URLs natively via httpcore-socks
-            proxy_client = httpx.Client(
-                http2=True,
-                proxy=PROXY_SOCKS5_URL,
-                timeout=httpx.Timeout(30.0, connect=15.0)
-            )
-            # Replace the module-level _http_client
-            clob_http_helpers._http_client = proxy_client
-            logger.info(f"[CLOB] ✓ Patched py-clob-client to use SOCKS5 proxy")
-        except Exception as e:
-            logger.warning(f"[CLOB] Failed to patch SOCKS5 proxy: {e}")
+    # === CRITICAL: Patch py-clob-client via HiFi proxy manager ===
+    # This uses residential SOCKS5 for zero Cloudflare blocks
+    pm = _get_proxy_manager()
+    if pm.patch_clob_client():
+        logger.info("[CLOB] HiFi proxy patched successfully")
+    else:
+        logger.warning("[CLOB] HiFi proxy not configured - using direct connection")
 
 except ImportError:
     HAS_CLOB_CLIENT = False
@@ -211,6 +211,8 @@ class ClobExecutor:
                 self.filled_orders += 1
                 self.total_volume += amount
                 self._update_position(token_id, side, amount, 0.0, asset)
+                # Record success for health monitoring
+                _get_proxy_manager().record_success()
 
             self.orders[order.order_id] = order
             logger.info(f"[CLOB] LIVE Market {side.value} ${amount:.2f} on {asset}: {order.status} (order_id={order.order_id})")
@@ -222,6 +224,9 @@ class ClobExecutor:
             status_code = getattr(e, 'status_code', 'N/A')
             logger.error(f"[CLOB] LIVE Order REJECTED: status={status_code}, error={error_msg}")
             logger.error(f"[CLOB] Order details: token_id={token_id[:20]}..., amount=${amount}, side={side.value}")
+            # Record failure with Cloudflare detection
+            is_cloudflare = "cloudflare" in str(error_msg).lower() or "blocked" in str(error_msg).lower()
+            _get_proxy_manager().record_failure(str(error_msg), is_cloudflare=is_cloudflare)
             return None
 
         except Exception as e:
@@ -240,6 +245,9 @@ class ClobExecutor:
                     error_details = f"{e} | Response text: {getattr(e.response, 'text', 'N/A')}"
 
             logger.error(f"[CLOB] Error details: {error_details}")
+            # Record failure with Cloudflare detection
+            is_cloudflare = "cloudflare" in error_details.lower() or "blocked" in error_details.lower() or "why have i been" in error_details.lower()
+            _get_proxy_manager().record_failure(error_details, is_cloudflare=is_cloudflare)
             return None
 
     def place_sell_with_retry(
@@ -323,10 +331,10 @@ class ClobExecutor:
                 self.orders[order.order_id] = order
                 return order
 
-            # If order is live (pending), wait briefly and check status
+            # If order is live (pending), wait for fill
             if order.status == "live":
                 import time
-                time.sleep(2)  # Wait 2 seconds for fill
+                time.sleep(5)  # Wait 5 seconds for fill (was 2s)
 
                 # Check if order filled via API
                 try:
@@ -391,10 +399,11 @@ class ClobExecutor:
 
         logger.warning(f"[CLOB] FOK BUY failed for {asset}, trying aggressive limit order...")
 
-        # Attempt 2: GTC limit order at premium price (to ensure fill)
-        # If current price is 0.50, buy at 0.54 (4% premium) to attract sellers
-        premium = 0.04
-        limit_price = min(0.99, current_price + premium)
+        # Attempt 2: GTC limit order at aggressive price (pay up to get filled)
+        # Strategy: Pay 10% premium or jump to 0.99, whichever is higher
+        # This ensures we cross the spread and hit resting asks
+        premium = 0.10  # 10% premium (was 4%)
+        limit_price = max(min(0.99, current_price + premium), 0.99 if current_price > 0.85 else current_price + premium)
 
         # Round to 2 decimal places (Polymarket requirement)
         limit_price = round(limit_price, 2)
@@ -439,10 +448,10 @@ class ClobExecutor:
                 self.orders[order.order_id] = order
                 return order
 
-            # If order is live (pending), wait briefly and check status
+            # If order is live (pending), wait for fill
             if order.status == "live":
                 import time
-                time.sleep(2)  # Wait 2 seconds for fill
+                time.sleep(5)  # Wait 5 seconds for fill (was 2s)
 
                 # Check if order filled via API
                 try:

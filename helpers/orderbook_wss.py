@@ -1,12 +1,9 @@
 """
 Polymarket CLOB WebSocket helpers for orderbook streaming.
 
-Uses:
-- aiohttp-socks for native async WebSocket + SOCKS5 proxy support (cleaner than python-socks)
-- websockets library as fallback for direct connections
-- Falls back to REST polling if WSS fails after MAX_WSS_FAILURES attempts
+Uses HiFi proxy system for zero Cloudflare blocks via residential SOCKS5.
 
-Connection Strategy:
+Connection Strategy (via HiFi):
 1. Try SOCKS5 via aiohttp-socks (preferred - handles proxy + WSS natively)
 2. Try direct websockets connection (if Cloudflare not blocking)
 3. Fall back to REST polling (last resort)
@@ -22,6 +19,17 @@ from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from typing import Dict, List, Callable, Optional, Any
 
+# HiFi Proxy Manager - centralized proxy configuration
+_proxy_manager = None
+
+def _get_proxy_manager():
+    """Lazy-load proxy manager to avoid circular imports."""
+    global _proxy_manager
+    if _proxy_manager is None:
+        from helpers.hifi_proxy import get_proxy_manager, PROXY_SOCKS5_URL as _SOCKS5
+        _proxy_manager = get_proxy_manager()
+    return _proxy_manager
+
 # Optional imports for SOCKS5 proxy support
 try:
     from aiohttp_socks import ProxyConnector, ProxyType
@@ -35,11 +43,8 @@ try:
 except ImportError:
     HAS_PYTHON_SOCKS = False
 
-# Residential proxy for bypassing Cloudflare datacenter IP blocks
-# SOCKS5 proxy is more reliable for WebSocket than HTTP proxy
-# SmartProxy: HTTP=10001, SOCKS5=10000
-PROXY_HTTP_URL = os.environ.get("RESIDENTIAL_PROXY_URL", "")  # HTTP proxy (fallback)
-PROXY_SOCKS5_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")  # SOCKS5 proxy (preferred for WSS)
+# Import proxy URLs from HiFi proxy manager (centralized)
+from helpers.hifi_proxy import PROXY_SOCKS5_URL, PROXY_HTTP_URL
 _try_direct_raw = os.environ.get("ORDERBOOK_TRY_DIRECT", "true")
 TRY_DIRECT_FIRST = _try_direct_raw.lower() == "true"
 
@@ -474,13 +479,18 @@ class OrderbookStreamer:
             )
 
             logger.info("[OB] ✓ aiohttp-socks WebSocket connected!")
+            _get_proxy_manager().record_success()
             return ws
 
         except asyncio.TimeoutError:
             logger.error("[OB] aiohttp-socks connection timeout (45s)")
+            _get_proxy_manager().record_failure("WebSocket timeout", is_cloudflare=False)
             return None
         except Exception as e:
+            error_str = str(e).lower()
+            is_cloudflare = "cloudflare" in error_str or "blocked" in error_str or "403" in error_str
             logger.error(f"[OB] aiohttp-socks connection failed: {type(e).__name__}: {e}")
+            _get_proxy_manager().record_failure(str(e), is_cloudflare=is_cloudflare)
             return None
 
     async def _connect_with_socks5_in_thread(self, proxy_url: str) -> Optional[websockets.WebSocketClientProtocol]:
