@@ -1,5 +1,5 @@
 app = "cross-market-state-fusion"  # Use existing Fly.io app
-primary_region = "sin"  # Singapore (closest to Asian crypto exchanges)
+primary_region = "iad"  # US East (Ashburn) - less likely to be blocked by Cloudflare
 
 [build]
   dockerfile = "Dockerfile.worker"
