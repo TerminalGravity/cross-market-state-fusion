@@ -64,6 +64,7 @@ from helpers.okx_futures import OKXFuturesStreamer as FuturesStreamer
 from helpers.clob_executor import create_executor, OrderSide
 from helpers.position_redeemer import PositionRedeemer
 from helpers.autonomy_manager import AutonomyManager
+from helpers.safety_manager import SafetyManager
 from strategies.base import MarketState, Action
 
 # Conditional import: Use NumPy on Linux, MLX on macOS
@@ -297,6 +298,18 @@ class TradingWorker:
         self.running = False
         self.shutdown_event = asyncio.Event()
 
+        # === SAFETY MANAGER (upstream-style) ===
+        # Configurable via environment variables
+        self.daily_loss_limit = float(os.getenv("DAILY_LOSS_LIMIT", "100"))
+        self.consecutive_loss_limit = int(os.getenv("CONSECUTIVE_LOSS_LIMIT", "5"))
+        self.max_positions = int(os.getenv("MAX_POSITIONS", "4"))
+        self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "100"))
+        self.max_total_exposure = float(os.getenv("MAX_TOTAL_EXPOSURE", "400"))
+
+        # SafetyManager instances (one per mode for independent tracking)
+        self.paper_safety: Optional[SafetyManager] = None
+        self.live_safety: Optional[SafetyManager] = None
+
         logger.info(f"TradingWorker initialized (dual_mode={self.dual_mode}, live_enabled={self.live_enabled})")
         logger.info(f"[HiFi v2] TP/SL: TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
         logger.info(f"[HiFi v2] Filters: momentum={self.momentum_filter_enabled}, orderbook={self.orderbook_filter_enabled}")
@@ -343,6 +356,35 @@ class TradingWorker:
                 }
             )
             logger.info(f"[LIVE] Created session: {self.live_session_id}")
+
+        # === INITIALIZE SAFETY MANAGERS ===
+        # Paper mode safety manager
+        if self.paper_session_id:
+            self.paper_safety = SafetyManager(
+                db=self.db,
+                session_id=self.paper_session_id,
+                daily_loss_limit=self.daily_loss_limit,
+                consecutive_loss_limit=self.consecutive_loss_limit,
+                max_positions=self.max_positions,
+                max_position_size=self.max_position_size,
+                max_total_exposure=self.max_total_exposure
+            )
+            await self.paper_safety.initialize()
+            logger.info(f"[PAPER] SafetyManager initialized")
+
+        # Live mode safety manager (more conservative defaults)
+        if self.live_session_id:
+            self.live_safety = SafetyManager(
+                db=self.db,
+                session_id=self.live_session_id,
+                daily_loss_limit=self.daily_loss_limit,
+                consecutive_loss_limit=self.consecutive_loss_limit,
+                max_positions=self.max_positions,
+                max_position_size=self.max_position_size,
+                max_total_exposure=self.max_total_exposure
+            )
+            await self.live_safety.initialize()
+            logger.info(f"[LIVE] SafetyManager initialized")
 
         # Send startup notification (if not recovered)
         if not recovered:
@@ -739,6 +781,20 @@ class TradingWorker:
             return
 
         if action == Action.BUY and (not pos or pos.size == 0):
+            # === SAFETY MANAGER VALIDATION ===
+            safety = self.live_safety if mode == 'live' else self.paper_safety
+            if safety:
+                amount = self.trade_size * 0.5
+                can_trade, reason = await safety.validate_trade(
+                    symbol=market.asset,
+                    size_usd=amount
+                )
+                if not can_trade:
+                    logger.warning(
+                        f"[{mode.upper()}] Trade blocked by SafetyManager: {reason}"
+                    )
+                    return
+
             # === LIQUIDITY & CONFIDENCE FILTERS (LIVE MODE ONLY) ===
             if mode == 'live':
                 # Skip if spread too wide (low liquidity indicator)
@@ -1080,6 +1136,11 @@ class TradingWorker:
 
             win_rate = win_count / trade_count if trade_count > 0 else 0
 
+            # Record trade result for safety tracking
+            safety = self.live_safety if mode == 'live' else self.paper_safety
+            if safety:
+                await safety.record_trade_result(pnl=pnl)
+
             logger.info(
                 f"[{mode.upper()}] SELL {market.asset} @ {state.prob*100:.1f}% | "
                 f"PnL: {'+'if pnl >= 0 else ''}{pnl:.2f} | {duration}s | "
@@ -1316,6 +1377,11 @@ class TradingWorker:
                     duration_seconds=duration
                 )
 
+                # Record trade result for safety tracking (updates position count)
+                safety = self.live_safety if mode == 'live' else self.paper_safety
+                if safety:
+                    await safety.record_trade_result(pnl=0.0)
+
             # Remove from in-memory positions
             if cid in positions:
                 del positions[cid]
@@ -1414,6 +1480,11 @@ class TradingWorker:
                 self.live_total_pnl += pnl
                 if pnl > 0:
                     self.live_win_count += 1
+
+            # Record trade result for safety tracking
+            safety = self.live_safety if mode == 'live' else self.paper_safety
+            if safety:
+                await safety.record_trade_result(pnl=pnl)
 
             logger.warning(
                 f"[{mode.upper()}] EMERGENCY CLOSE {market.asset} | reason={reason} | "
