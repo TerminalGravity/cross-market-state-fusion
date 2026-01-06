@@ -64,9 +64,7 @@ from helpers.okx_futures import OKXFuturesStreamer as FuturesStreamer
 from helpers.clob_executor import create_executor, OrderSide
 from helpers.position_redeemer import PositionRedeemer
 from helpers.autonomy_manager import AutonomyManager
-from helpers.safety_manager import SafetyManager
 from strategies.base import MarketState, Action
-from strategies.momentum_signal import MomentumSignalGenerator, SignalDirection, MomentumSignal
 
 # Conditional import: Use NumPy on Linux, MLX on macOS
 try:
@@ -286,40 +284,16 @@ class TradingWorker:
 
         # Take-profit / Stop-loss thresholds (override RL when hit)
         # Binary markets: lock in gains before resolution swing
-        # HiFi v2: Tighter stop-loss to cut losses faster (trial by error optimization)
-        self.tp_threshold = 1.50   # +150% → force sell (e.g., 10¢→25¢, locks 2.5x gain)
-        self.sl_threshold = -0.25  # -25% → force sell (cut losses faster, was -50%)
+        self.tp_threshold = 2.00   # +200% → force sell (e.g., 10¢→30¢, locks 3x gain)
+        self.sl_threshold = -0.50  # -50% → force sell (prevents -100% wipeout)
         self.tp_sl_enabled = True  # Enable TP/SL safety net
-
-        # HiFi v2: Momentum & orderbook filters for live mode
-        self.momentum_filter_enabled = True
-        self.orderbook_filter_enabled = True
-
-        # HiFi v3: Momentum Signal Generator for bidirectional trading
-        self.momentum_signal_gen = MomentumSignalGenerator()
-        self.use_momentum_signals = os.getenv("USE_MOMENTUM_SIGNALS", "true").lower() == "true"
-        logger.info(f"[HiFi v3] Momentum signals: {'ENABLED' if self.use_momentum_signals else 'disabled'}")
 
         # Control
         self.running = False
         self.shutdown_event = asyncio.Event()
 
-        # === SAFETY MANAGER (upstream-style) ===
-        # Configurable via environment variables
-        # HiFi v3: Increased consecutive loss limit from 5 to 10 for more runway
-        self.daily_loss_limit = float(os.getenv("DAILY_LOSS_LIMIT", "100"))
-        self.consecutive_loss_limit = int(os.getenv("CONSECUTIVE_LOSS_LIMIT", "10"))
-        self.max_positions = int(os.getenv("MAX_POSITIONS", "4"))
-        self.max_position_size = float(os.getenv("MAX_POSITION_SIZE", "100"))
-        self.max_total_exposure = float(os.getenv("MAX_TOTAL_EXPOSURE", "400"))
-
-        # SafetyManager instances (one per mode for independent tracking)
-        self.paper_safety: Optional[SafetyManager] = None
-        self.live_safety: Optional[SafetyManager] = None
-
         logger.info(f"TradingWorker initialized (dual_mode={self.dual_mode}, live_enabled={self.live_enabled})")
-        logger.info(f"[HiFi v2] TP/SL: TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
-        logger.info(f"[HiFi v2] Filters: momentum={self.momentum_filter_enabled}, orderbook={self.orderbook_filter_enabled}")
+        logger.info(f"TP/SL safety net: enabled={self.tp_sl_enabled}, TP={self.tp_threshold*100:.0f}%, SL={self.sl_threshold*100:.0f}%")
 
     async def initialize(self) -> None:
         """Initialize all components."""
@@ -363,35 +337,6 @@ class TradingWorker:
                 }
             )
             logger.info(f"[LIVE] Created session: {self.live_session_id}")
-
-        # === INITIALIZE SAFETY MANAGERS ===
-        # Paper mode safety manager
-        if self.paper_session_id:
-            self.paper_safety = SafetyManager(
-                db=self.db,
-                session_id=self.paper_session_id,
-                daily_loss_limit=self.daily_loss_limit,
-                consecutive_loss_limit=self.consecutive_loss_limit,
-                max_positions=self.max_positions,
-                max_position_size=self.max_position_size,
-                max_total_exposure=self.max_total_exposure
-            )
-            await self.paper_safety.initialize()
-            logger.info(f"[PAPER] SafetyManager initialized")
-
-        # Live mode safety manager (more conservative defaults)
-        if self.live_session_id:
-            self.live_safety = SafetyManager(
-                db=self.db,
-                session_id=self.live_session_id,
-                daily_loss_limit=self.daily_loss_limit,
-                consecutive_loss_limit=self.consecutive_loss_limit,
-                max_positions=self.max_positions,
-                max_position_size=self.max_position_size,
-                max_total_exposure=self.max_total_exposure
-            )
-            await self.live_safety.initialize()
-            logger.info(f"[LIVE] SafetyManager initialized")
 
         # Send startup notification (if not recovered)
         if not recovered:
@@ -717,248 +662,6 @@ class TradingWorker:
 
         return action, probs_np, confidence
 
-    def get_momentum_signal(self, state: MarketState) -> Optional[MomentumSignal]:
-        """
-        Generate high-confidence momentum signal for bidirectional trading (HiFi v3).
-
-        Unlike RL which only trades UP tokens, momentum signals can recommend:
-        - BUY UP: When strong bullish momentum detected
-        - BUY DOWN: When strong bearish momentum detected
-
-        Returns:
-            MomentumSignal with direction, confidence, and entry details
-            None if no strong signal detected
-        """
-        # Debug: Log momentum conditions periodically
-        if hasattr(self, '_momentum_log_counter'):
-            self._momentum_log_counter += 1
-        else:
-            self._momentum_log_counter = 0
-
-        if self._momentum_log_counter % 20 == 0:  # Every 20 checks (~10 seconds)
-            logger.info(
-                f"[HiFi v3] {state.asset} momentum check: "
-                f"1m={state.returns_1m*100:.3f}% 5m={state.returns_5m*100:.3f}% 10m={state.returns_10m*100:.3f}% | "
-                f"prob={state.prob*100:.0f}% | OB_L1={state.order_book_imbalance_l1:.2f}"
-            )
-
-        signal = self.momentum_signal_gen.generate_signal(
-            asset=state.asset,
-            returns_1m=state.returns_1m,
-            returns_5m=state.returns_5m,
-            returns_10m=state.returns_10m,
-            prob_up=state.prob,
-            ob_imbalance_l1=state.order_book_imbalance_l1,
-            ob_imbalance_l5=state.order_book_imbalance_l5,
-            time_remaining=state.time_remaining,
-            spread=state.spread,
-            cvd_acceleration=state.cvd_acceleration,
-            trade_flow_imbalance=state.trade_flow_imbalance,
-        )
-
-        if signal:
-            logger.info(
-                f"[HiFi v3] {state.asset} SIGNAL: {signal.direction.name} "
-                f"@ {signal.entry_price*100:.0f}% | conf={signal.confidence*100:.0f}% | "
-                f"{signal.reason}"
-            )
-
-        return signal
-
-    async def execute_momentum_signal(
-        self,
-        cid: str,
-        market: Market,
-        signal: MomentumSignal,
-        state: MarketState,
-        mode: str,
-        executor,
-        positions: Dict[str, Position],
-        session_id: str
-    ) -> None:
-        """
-        Execute a momentum signal (can be UP or DOWN direction).
-
-        Args:
-            signal: MomentumSignal with direction
-            Other args same as _execute_action_single
-        """
-        pos = positions.get(cid)
-
-        # Skip if already have a position
-        if pos and pos.size > 0:
-            return
-
-        # Safety manager check
-        safety = self.live_safety if mode == 'live' else self.paper_safety
-        if safety:
-            amount = self.trade_size * 0.5
-            can_trade, reason = await safety.validate_trade(
-                symbol=market.asset,
-                size_usd=amount
-            )
-            if not can_trade:
-                logger.warning(f"[{mode.upper()}] Trade blocked by SafetyManager: {reason}")
-                return
-
-        # Live mode confidence filter (higher than paper)
-        if mode == 'live' and signal.confidence < MomentumSignalGenerator.LIVE_MIN_CONFIDENCE:
-            logger.info(
-                f"[LIVE] Skipping {market.asset} - confidence {signal.confidence*100:.0f}% < "
-                f"{MomentumSignalGenerator.LIVE_MIN_CONFIDENCE*100:.0f}% live min"
-            )
-            return
-
-        # Determine which token to buy
-        if signal.direction == SignalDirection.UP:
-            token_id = market.token_up
-            side = "UP"
-            entry_price = state.prob
-        elif signal.direction == SignalDirection.DOWN:
-            token_id = market.token_down
-            side = "DOWN"
-            entry_price = 1.0 - state.prob  # DOWN token price
-        else:
-            return
-
-        amount = self.trade_size * 0.5
-        binance_price = self.price_streamer.get_price(market.asset)
-
-        # Execute order
-        if mode == 'live':
-            order = executor.place_buy_with_retry(
-                token_id=token_id,
-                amount_dollars=amount,
-                current_price=entry_price,
-                asset=market.asset
-            )
-        else:
-            order = executor.place_market_order(
-                token_id=token_id,
-                amount=amount,
-                side=OrderSide.BUY,
-                asset=market.asset
-            )
-
-        # For live mode, verify order was successful
-        if mode == 'live' and (not order or order.status != "matched"):
-            logger.warning(
-                f"[LIVE] Order failed for {market.asset}: "
-                f"{order.status if order else 'no response'}"
-            )
-            return
-
-        # Record to database
-        probs_dict = {
-            "hold": 0.0,
-            "buy": 1.0 if signal.direction == SignalDirection.UP else 0.0,
-            "sell": 0.0,
-            "momentum_signal": signal.direction.name,
-            "momentum_confidence": signal.confidence
-        }
-
-        trade_id = await self.db.record_trade_open(
-            session_id=session_id,
-            condition_id=cid,
-            asset=market.asset,
-            entry_price=entry_price,
-            entry_binance_price=binance_price,
-            side=side,
-            size_dollars=amount,
-            time_remaining=state.time_remaining,
-            action_probs=probs_dict,
-            market_state={
-                "prob": state.prob,
-                "spread": state.spread,
-                "imbalance_l1": state.order_book_imbalance_l1,
-                "signal_direction": signal.direction.name,
-            },
-            order_id=order.order_id if order else None,
-            execution_type=order.execution_type if order else "paper",
-            fill_status=order.status if order else None,
-            clob_response=order.clob_response if order else None
-        )
-
-        # Store position
-        pos = Position(
-            asset=market.asset,
-            side=side,
-            size=amount,
-            shares=amount / entry_price if entry_price > 0 else 0,
-            entry_price=entry_price,
-            entry_binance_price=binance_price,
-            token_id=token_id,
-            entry_time=datetime.now(timezone.utc),
-            condition_id=cid,
-            trade_id=trade_id,
-            action_probs=probs_dict,
-        )
-        positions[cid] = pos
-
-        # Discord alert
-        await self.discord.send_trade_alert(
-            asset=market.asset,
-            side=f"{side} (momentum {signal.direction.name})",
-            entry_price=entry_price,
-            size=amount,
-            reason=signal.reason,
-            mode=mode.upper(),
-        )
-
-        logger.info(
-            f"[{mode.upper()}] OPENED {side} @ {entry_price*100:.0f}% | "
-            f"${amount:.2f} | conf={signal.confidence*100:.0f}% | {signal.reason}"
-        )
-
-    async def execute_momentum_signal_dual_mode(
-        self,
-        cid: str,
-        market: Market,
-        signal: MomentumSignal,
-        state: MarketState
-    ) -> None:
-        """Execute momentum signal on both paper and live modes in parallel."""
-        tasks = []
-
-        # Always execute paper
-        tasks.append(
-            self.execute_momentum_signal(
-                cid, market, signal, state,
-                mode='paper',
-                executor=self.paper_executor,
-                positions=self.paper_positions,
-                session_id=self.paper_session_id
-            )
-        )
-
-        # Execute live if enabled
-        if (self.live_enabled or self.dual_mode) and self.live_executor and self.live_session_id:
-            tasks.append(
-                self.execute_momentum_signal(
-                    cid, market, signal, state,
-                    mode='live',
-                    executor=self.live_executor,
-                    positions=self.live_positions,
-                    session_id=self.live_session_id
-                )
-            )
-
-        # Run in parallel
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Check for live failures
-        if len(results) > 1 and isinstance(results[1], Exception):
-            logger.error(f"[LIVE] Momentum execution failed: {results[1]}")
-            self.live_failure_count += 1
-
-            if self.live_failure_count >= self.live_max_failures:
-                logger.error(f"[LIVE] Disabled after {self.live_max_failures} failures")
-                self.live_enabled = False
-                await self.discord.send_error(
-                    message=f"⚠️ Live trading disabled after {self.live_max_failures} failures",
-                    details=f"Error: {results[1]}\n\nPaper mode continues running."
-                )
-
     async def execute_action_dual_mode(
         self,
         cid: str,
@@ -1030,20 +733,6 @@ class TradingWorker:
             return
 
         if action == Action.BUY and (not pos or pos.size == 0):
-            # === SAFETY MANAGER VALIDATION ===
-            safety = self.live_safety if mode == 'live' else self.paper_safety
-            if safety:
-                amount = self.trade_size * 0.5
-                can_trade, reason = await safety.validate_trade(
-                    symbol=market.asset,
-                    size_usd=amount
-                )
-                if not can_trade:
-                    logger.warning(
-                        f"[{mode.upper()}] Trade blocked by SafetyManager: {reason}"
-                    )
-                    return
-
             # === LIQUIDITY & CONFIDENCE FILTERS (LIVE MODE ONLY) ===
             if mode == 'live':
                 # Skip if spread too wide (low liquidity indicator)
@@ -1055,8 +744,7 @@ class TradingWorker:
                     return
 
                 # Skip if confidence too low (signal quality filter)
-                # HiFi v2: Raised from 40% to 50% for higher quality signals
-                MIN_CONFIDENCE = 0.50  # 50% minimum confidence for live trades
+                MIN_CONFIDENCE = 0.40  # 40% minimum confidence for live trades
                 if confidence < MIN_CONFIDENCE:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - confidence {confidence*100:.0f}% < {MIN_CONFIDENCE*100:.0f}% min"
@@ -1101,26 +789,6 @@ class TradingWorker:
                 if state.prob < MIN_ENTRY_PRICE:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% < {MIN_ENTRY_PRICE*100:.0f}% min (too risky)"
-                    )
-                    return
-
-                # HiFi v2: Momentum filter - only buy when price is stable or going UP
-                # Allow small negative returns (-0.1%) to catch high-confidence signals
-                MOMENTUM_THRESHOLD = -0.001  # -0.1% minimum (was 0%)
-                if self.momentum_filter_enabled and state.returns_1m < MOMENTUM_THRESHOLD:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - negative momentum "
-                        f"(1m return={state.returns_1m*100:.2f}% < {MOMENTUM_THRESHOLD*100:.1f}%)"
-                    )
-                    return
-
-                # HiFi v2: Orderbook imbalance filter - allow slight negative imbalance
-                # Relaxed to L1 >= -0.5 to catch high-confidence signals
-                ORDERBOOK_THRESHOLD = -0.5  # Allow slight negative (was 0)
-                if self.orderbook_filter_enabled and state.order_book_imbalance_l1 < ORDERBOOK_THRESHOLD:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - bearish orderbook "
-                        f"(L1 imbalance={state.order_book_imbalance_l1:.2f} < {ORDERBOOK_THRESHOLD})"
                     )
                     return
 
@@ -1387,11 +1055,6 @@ class TradingWorker:
 
             win_rate = win_count / trade_count if trade_count > 0 else 0
 
-            # Record trade result for safety tracking
-            safety = self.live_safety if mode == 'live' else self.paper_safety
-            if safety:
-                await safety.record_trade_result(pnl=pnl)
-
             logger.info(
                 f"[{mode.upper()}] SELL {market.asset} @ {state.prob*100:.1f}% | "
                 f"PnL: {'+'if pnl >= 0 else ''}{pnl:.2f} | {duration}s | "
@@ -1628,11 +1291,6 @@ class TradingWorker:
                     duration_seconds=duration
                 )
 
-                # Record trade result for safety tracking (updates position count)
-                safety = self.live_safety if mode == 'live' else self.paper_safety
-                if safety:
-                    await safety.record_trade_result(pnl=0.0)
-
             # Remove from in-memory positions
             if cid in positions:
                 del positions[cid]
@@ -1731,11 +1389,6 @@ class TradingWorker:
                 self.live_total_pnl += pnl
                 if pnl > 0:
                     self.live_win_count += 1
-
-            # Record trade result for safety tracking
-            safety = self.live_safety if mode == 'live' else self.paper_safety
-            if safety:
-                await safety.record_trade_result(pnl=pnl)
 
             logger.warning(
                 f"[{mode.upper()}] EMERGENCY CLOSE {market.asset} | reason={reason} | "
@@ -2027,27 +1680,6 @@ class TradingWorker:
                         if not self.system_healthy:
                             continue
 
-                        # === HiFi v3: Momentum Signals (Bidirectional) ===
-                        # Check momentum signal first (trades both UP and DOWN)
-                        if self.use_momentum_signals:
-                            momentum_signal = self.get_momentum_signal(state)
-                            if momentum_signal:
-                                # Execute momentum signal on both modes
-                                if self.dual_mode or self.live_enabled:
-                                    await self.execute_momentum_signal_dual_mode(
-                                        cid, market, momentum_signal, state
-                                    )
-                                else:
-                                    await self.execute_momentum_signal(
-                                        cid, market, momentum_signal, state,
-                                        mode='paper',
-                                        executor=self.paper_executor,
-                                        positions=self.paper_positions,
-                                        session_id=self.paper_session_id
-                                    )
-                                continue  # Skip RL fallback if momentum signal executed
-
-                        # === Fallback: RL Agent (UP tokens only) ===
                         action, probs, confidence = self.get_rl_action(state)
 
                         # Execute on both modes if dual-mode enabled
