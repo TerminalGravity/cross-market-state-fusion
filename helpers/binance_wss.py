@@ -1,7 +1,8 @@
 """
 Binance WebSocket helpers for real-time crypto price data.
 
-Features REST API fallback when WebSocket is blocked by datacenter IP restrictions.
+Uses HiFi proxy system for zero Cloudflare blocks via residential SOCKS5.
+Features REST API fallback when WebSocket is blocked.
 """
 import asyncio
 import json
@@ -25,10 +26,8 @@ except ImportError:
 BINANCE_WSS = "wss://stream.binance.com:9443"
 BINANCE_REST = "https://api.binance.com/api/v3"
 
-# Residential proxy for bypassing datacenter IP blocks
-# Format: socks5://user:pass@host:port
-# Use same env var as orderbook_wss.py for consistency
-PROXY_URL = os.environ.get("RESIDENTIAL_SOCKS5_URL", "")
+# Import proxy URL from centralized HiFi proxy manager
+from helpers.hifi_proxy import PROXY_SOCKS5_URL as PROXY_URL
 
 # REST fallback configuration
 REST_POLL_INTERVAL = 0.2  # 200ms polling when WSS unavailable

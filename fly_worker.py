@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Fly.io Worker: 24/7 Paper Trading Service
+Fly.io Worker: 24/7 Paper Trading Service (HiFi Proxy System)
 
 Runs the RL inference loop, manages WebSocket streams,
 persists to PostgreSQL, and sends Discord alerts.
+
+Uses centralized HiFi proxy for zero Cloudflare blocks via Decodo residential SOCKS5.
 
 Usage:
     # Paper trading (default)
@@ -19,6 +21,7 @@ Environment Variables:
     DISCORD_WEBHOOK_URL: Discord webhook for alerts
     POLYMARKET_PRIVATE_KEY: Required for live trading
     POLYMARKET_FUNDER_ADDRESS: Required for live trading
+    RESIDENTIAL_SOCKS5_URL: Decodo SOCKS5 proxy (e.g., socks5://user-country-ca:pass@gate.decodo.com:7000)
 """
 import asyncio
 import os
@@ -33,39 +36,16 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure residential SOCKS5 proxy for Polymarket CLOB API (bypasses Cloudflare)
-# Format: socks5://user:pass@host:port
-SOCKS5_PROXY_URL = os.getenv("RESIDENTIAL_SOCKS5_URL")
-if SOCKS5_PROXY_URL:
-    print(f"[PROXY] SOCKS5 proxy configured: {SOCKS5_PROXY_URL.split('@')[-1] if '@' in SOCKS5_PROXY_URL else 'configured'}")
+# Initialize HiFi Proxy System - centralized proxy with health monitoring
+# This patches py-clob-client and provides health tracking for all components
+from helpers.hifi_proxy import get_proxy_manager, PROXY_SOCKS5_URL
 
-    # CRITICAL: Monkey-patch py-clob-client's httpx client to use SOCKS5 proxy
-    # The library creates httpx.Client() at import time BEFORE we can configure it
-    # So we must replace it with a proxy-aware client AFTER import
-    def _patch_clob_client_proxy():
-        try:
-            import httpx
-            from py_clob_client.http_helpers import helpers as clob_helpers
-
-            # Create new httpx client WITH SOCKS5 proxy
-            # httpx[socks] must be installed for this to work
-            proxied_client = httpx.Client(
-                http2=True,
-                proxy=SOCKS5_PROXY_URL,
-                timeout=httpx.Timeout(30.0)
-            )
-
-            # Replace the module-level singleton
-            clob_helpers._http_client = proxied_client
-            print(f"[PROXY] ✓ Patched py-clob-client with SOCKS5 proxy")
-            return True
-        except Exception as e:
-            print(f"[PROXY] WARNING: Failed to patch py-clob-client: {e}")
-            import traceback
-            traceback.print_exc()
-            return False
-
-    _patch_clob_client_proxy()
+_hifi_proxy = get_proxy_manager()
+if PROXY_SOCKS5_URL:
+    print(f"[HIFI-PROXY] Initialized with Decodo residential SOCKS5")
+    # Patch py-clob-client via HiFi manager (happens automatically in clob_executor import)
+else:
+    print("[HIFI-PROXY] WARNING: No proxy configured - using direct connections")
 
 import json
 
@@ -763,11 +743,52 @@ class TradingWorker:
                     )
                     return
 
-                # Skip if confidence too low
-                MIN_CONFIDENCE = 0.40  # 40% minimum confidence
+                # Skip if confidence too low (signal quality filter)
+                MIN_CONFIDENCE = 0.40  # 40% minimum confidence for live trades
                 if confidence < MIN_CONFIDENCE:
                     logger.info(
                         f"[LIVE] Skipping {market.asset} - confidence {confidence*100:.0f}% < {MIN_CONFIDENCE*100:.0f}% min"
+                    )
+                    return
+
+                # Skip if market expiring soon (liquidity dries up near expiry)
+                MIN_TIME_REMAINING = 0.20  # 20% = 3 minutes for 15-min market
+                if state.time_remaining < MIN_TIME_REMAINING:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - market expiring ({state.time_remaining*100:.0f}% remaining < {MIN_TIME_REMAINING*100:.0f}% min)"
+                    )
+                    return
+
+                # Skip if orderbook too thin (not enough sellers)
+                ob_up = self.orderbook_streamer.get_orderbook(market.condition_id, "UP")
+                if ob_up and ob_up.asks:
+                    # Sum available liquidity on ask side (first 5 levels)
+                    ask_depth = sum(size for _, size in ob_up.asks[:5])
+                    MIN_DEPTH = 10.0  # Minimum $10 of ask liquidity
+                    expected_shares = self.trade_size * 0.5 / state.prob if state.prob > 0 else 0
+                    if ask_depth < MIN_DEPTH or ask_depth < expected_shares * 1.5:
+                        logger.info(
+                            f"[LIVE] Skipping {market.asset} - thin orderbook (ask depth ${ask_depth:.0f} < ${max(MIN_DEPTH, expected_shares*1.5):.0f} needed)"
+                        )
+                        return
+                elif not ob_up or not ob_up.asks:
+                    logger.info(f"[LIVE] Skipping {market.asset} - no asks in orderbook")
+                    return
+
+                # Skip if entry price too high (limited upside)
+                # Buying at 70% and winning = 43% return
+                # Buying at 50% and winning = 100% return
+                # Buying at 30% and winning = 233% return
+                MAX_ENTRY_PRICE = 0.70  # 70% max - ensures at least 43% return on win
+                MIN_ENTRY_PRICE = 0.20  # 20% min - avoid extreme prices (illiquid/high risk)
+                if state.prob > MAX_ENTRY_PRICE:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% > {MAX_ENTRY_PRICE*100:.0f}% max (limited upside)"
+                    )
+                    return
+                if state.prob < MIN_ENTRY_PRICE:
+                    logger.info(
+                        f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% < {MIN_ENTRY_PRICE*100:.0f}% min (too risky)"
                     )
                     return
 
@@ -1623,6 +1644,20 @@ class TradingWorker:
                         )
                     else:
                         logger.info(f"Status: PnL=${self.paper_total_pnl:.2f} | Trades={self.paper_trade_count} | Win={paper_wr*100:.0f}%")
+
+                    # Log HiFi proxy health every 5 minutes
+                    if hasattr(self, '_last_proxy_log'):
+                        if (now - self._last_proxy_log).total_seconds() > 300:
+                            proxy_health = _hifi_proxy.get_health_status()
+                            logger.info(
+                                f"[HIFI-PROXY] Health: {proxy_health['success_rate']} success | "
+                                f"CF blocks={proxy_health['cloudflare_blocks']} | "
+                                f"consec_fails={proxy_health['consecutive_failures']}"
+                            )
+                            self._last_proxy_log = now
+                    else:
+                        self._last_proxy_log = now
+
                     last_status = now
 
                 # Process each market
