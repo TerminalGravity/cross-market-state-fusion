@@ -33,3 +33,6 @@ py-clob-client>=0.29.0
 # Blockchain interaction (for profit transfers)
 web3>=6.0.0
 eth-account>=0.10.0
+
+# MCP Server (HTTP transport for remote access)
+fastmcp>=2.14.0

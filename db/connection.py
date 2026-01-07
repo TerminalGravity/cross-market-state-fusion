@@ -590,3 +590,7 @@ async def init_database() -> Database:
     db = get_database()
     await db.connect()
     return db
+
+
+# Alias for backward compatibility
+DatabaseConnection = Database

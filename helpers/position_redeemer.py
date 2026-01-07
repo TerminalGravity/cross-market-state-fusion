@@ -324,6 +324,45 @@ class PositionRedeemer:
                 error=str(e)
             )
 
+    async def cleanup_dead_positions(self) -> List[RedemptionResult]:
+        """
+        Clean up dead (losing) positions worth $0.
+
+        These positions clutter the account but can be cleared by calling
+        redeemPositions (returns $0 but removes from account).
+
+        Returns:
+            List of redemption results
+        """
+        positions = await self.get_redeemable_positions()
+
+        # Filter to losing positions (value = 0, not winning)
+        dead = [p for p in positions if p.current_value == 0 or not p.is_winning]
+
+        if not dead:
+            logger.info("No dead positions to clean up")
+            return []
+
+        logger.info(f"Found {len(dead)} dead positions to clean up")
+
+        results = []
+        for position in dead:
+            # Check if payout is reported before attempting cleanup
+            if not await self.check_payout_reported(position.condition_id):
+                logger.debug(f"Skipping {position.condition_id[:10]}... - payout not reported")
+                continue
+
+            result = await self.redeem_position(position)
+            results.append(result)
+
+            # Small delay between redemptions
+            await asyncio.sleep(2)
+
+        successful = sum(1 for r in results if r.success)
+        logger.info(f"Dead position cleanup: {successful}/{len(results)} cleaned")
+
+        return results
+
     async def redeem_all_winning(self) -> List[RedemptionResult]:
         """
         Find and redeem all winning positions.
@@ -471,22 +510,55 @@ async def main():
 
     total_value = sum(p.current_value for p in winning)
     print(f"\nTotal redeemable: ${total_value:.2f} from {len(winning)} winning positions")
+    print(f"Dead positions (worth $0): {len(losing)}")
 
-    # If private key is set, ask to redeem
-    if private_key and winning:
-        print("\n" + "="*50)
-        response = input(f"Redeem ${total_value:.2f} now? (y/n): ")
-        if response.lower() == 'y':
+    if not private_key:
+        print("\nSet POLYMARKET_PRIVATE_KEY to enable redemption")
+        return
+
+    print("\n" + "="*50)
+    print("Options:")
+    print("  1. Redeem winning positions only")
+    print("  2. Clean up dead (losing) positions only")
+    print("  3. Both: redeem winning + clean up dead")
+    print("  q. Quit")
+
+    response = input("\nChoice (1/2/3/q): ").strip().lower()
+
+    if response == '1' and winning:
+        print(f"\nRedeeming ${total_value:.2f} from {len(winning)} positions...")
+        results = await redeemer.redeem_all_winning()
+        _print_results(results)
+
+    elif response == '2' and losing:
+        print(f"\nCleaning up {len(losing)} dead positions...")
+        results = await redeemer.cleanup_dead_positions()
+        _print_results(results)
+
+    elif response == '3':
+        if winning:
+            print(f"\nRedeeming ${total_value:.2f} from {len(winning)} positions...")
             results = await redeemer.redeem_all_winning()
-            for r in results:
-                status = "OK" if r.success else "FAIL"
-                print(f"  {status}: {r.condition_id[:10]}... - ${r.amount_redeemed:.2f}")
-                if r.tx_hash:
-                    print(f"       TX: https://polygonscan.com/tx/{r.tx_hash}")
-                if r.error:
-                    print(f"       Error: {r.error}")
-    elif not private_key:
-        print("\nSet POLYMARKET_PRIVATE_KEY to enable automatic redemption")
+            _print_results(results)
+
+        if losing:
+            print(f"\nCleaning up {len(losing)} dead positions...")
+            results = await redeemer.cleanup_dead_positions()
+            _print_results(results)
+
+    else:
+        print("Cancelled")
+
+
+def _print_results(results: List[RedemptionResult]):
+    """Helper to print redemption results."""
+    for r in results:
+        status = "✓" if r.success else "✗"
+        print(f"  {status} {r.condition_id[:10]}... - ${r.amount_redeemed:.2f}")
+        if r.tx_hash:
+            print(f"    TX: https://polygonscan.com/tx/{r.tx_hash}")
+        if r.error:
+            print(f"    Error: {r.error}")
 
 
 if __name__ == "__main__":

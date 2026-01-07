@@ -101,6 +101,116 @@ class OrderbookState:
             return self.best_ask - self.best_bid
         return None
 
+    @property
+    def total_bid_depth(self) -> float:
+        """Total shares available on bid side."""
+        return sum(size for _, size in self.bids)
+
+    @property
+    def total_ask_depth(self) -> float:
+        """Total shares available on ask side."""
+        return sum(size for _, size in self.asks)
+
+    def calculate_sell_fill_price(self, shares_to_sell: float) -> tuple[Optional[float], float, bool]:
+        """
+        Calculate realistic fill price by walking the bid side of the book.
+
+        Returns:
+            (avg_fill_price, fillable_shares, can_fill_all)
+
+        In thin orderbooks, this reveals the TRUE exit price vs the misleading mid_price.
+        """
+        if not self.bids or shares_to_sell <= 0:
+            return None, 0.0, False
+
+        remaining = shares_to_sell
+        total_value = 0.0
+        filled_shares = 0.0
+
+        for price, size in self.bids:
+            if remaining <= 0:
+                break
+            fill_at_level = min(remaining, size)
+            total_value += fill_at_level * price
+            filled_shares += fill_at_level
+            remaining -= fill_at_level
+
+        if filled_shares <= 0:
+            return None, 0.0, False
+
+        avg_fill_price = total_value / filled_shares
+        can_fill_all = remaining <= 0
+
+        return avg_fill_price, filled_shares, can_fill_all
+
+    def calculate_buy_fill_price(self, dollars_to_spend: float) -> tuple[Optional[float], float, bool]:
+        """
+        Calculate realistic fill price by walking the ask side of the book.
+
+        Returns:
+            (avg_fill_price, shares_received, can_fill_all)
+        """
+        if not self.asks or dollars_to_spend <= 0:
+            return None, 0.0, False
+
+        remaining_dollars = dollars_to_spend
+        total_shares = 0.0
+        total_spent = 0.0
+
+        for price, size in self.asks:
+            if remaining_dollars <= 0:
+                break
+            # How much can we buy at this level?
+            max_spend_at_level = size * price
+            spend_at_level = min(remaining_dollars, max_spend_at_level)
+            shares_at_level = spend_at_level / price
+
+            total_shares += shares_at_level
+            total_spent += spend_at_level
+            remaining_dollars -= spend_at_level
+
+        if total_shares <= 0:
+            return None, 0.0, False
+
+        avg_fill_price = total_spent / total_shares
+        can_fill_all = remaining_dollars <= 0
+
+        return avg_fill_price, total_shares, can_fill_all
+
+    def get_slippage_to_sell(self, shares_to_sell: float) -> Optional[float]:
+        """
+        Calculate slippage percentage if selling shares_to_sell.
+
+        Returns:
+            Slippage as decimal (e.g., 0.15 = 15% slippage from mid price)
+            None if cannot calculate
+        """
+        if not self.mid_price:
+            return None
+
+        fill_price, _, can_fill = self.calculate_sell_fill_price(shares_to_sell)
+        if fill_price is None:
+            return None
+
+        slippage = (self.mid_price - fill_price) / self.mid_price
+        return slippage
+
+    def has_exit_liquidity(self, shares_to_sell: float, max_slippage: float = 0.20) -> bool:
+        """
+        Check if there's enough liquidity to exit at acceptable slippage.
+
+        Args:
+            shares_to_sell: Number of shares to sell
+            max_slippage: Maximum acceptable slippage (default 20%)
+
+        Returns:
+            True if can exit within slippage tolerance
+        """
+        slippage = self.get_slippage_to_sell(shares_to_sell)
+        if slippage is None:
+            return False
+        return slippage <= max_slippage
+
 
 class OrderbookStreamer:
     """Stream orderbook data from Polymarket CLOB."""

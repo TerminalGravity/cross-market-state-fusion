@@ -1,5 +1,5 @@
 app = "cross-market-state-fusion"  # Use existing Fly.io app
-primary_region = "iad"  # US East (Ashburn) - less likely to be blocked by Cloudflare
+primary_region = "yyz"  # Toronto, Canada - Polymarket accessible without proxy
 
 [build]
   dockerfile = "Dockerfile.worker"
@@ -7,7 +7,7 @@ primary_region = "iad"  # US East (Ashburn) - less likely to be blocked by Cloud
 [env]
   TRADING_MODE = "live"
   DUAL_MODE = "true"
-  TRADE_SIZE = "10"
+  TRADE_SIZE = "5"
   MODEL_PATH = "rl_model"
 
 # No HTTP service needed (background worker)

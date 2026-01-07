@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
 Base classes for trading strategies.
+
+Feature architecture:
+- Original 18 features: Binance + Polymarket orderbook + position state
+- Expanded 42 features: + Coinglass + Deribit + On-chain + Sentiment
+
+Use to_features() for backward compatibility (18 features)
+Use to_expanded_features() for full multi-source model (42 features)
 """
 import numpy as np
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from enum import Enum
 
 
@@ -103,6 +110,63 @@ class MarketState:
     vol_regime: float = 0.0  # High/low vol environment
     trend_regime: float = 0.0  # Trending or ranging
 
+    # === EXPANDED MULTI-SOURCE FEATURES ===
+    # These are populated by DataAggregator from helpers/data_sources/
+
+    # Coinglass - Cross-exchange funding & positioning
+    funding_rate_binance: float = 0.0
+    funding_rate_okx: float = 0.0
+    funding_divergence: float = 0.0  # Max spread across exchanges
+    long_short_ratio: float = 1.0    # Aggregate L/S ratio
+    oi_change_1h: float = 0.0        # Open interest change
+    liquidation_pressure: float = 0.0  # Net long vs short liquidations
+
+    # Deribit - Options market signals
+    iv_atm: float = 0.6              # At-the-money implied vol (30-day)
+    iv_skew: float = 0.0             # Put vs call IV difference
+    put_call_ratio: float = 1.0      # Options volume ratio
+    options_volume: float = 0.0      # Total options volume
+
+    # On-chain - Whale & exchange flows
+    exchange_inflow: float = 0.0     # Deposits to exchanges (bearish)
+    exchange_outflow: float = 0.0    # Withdrawals (bullish)
+    exchange_netflow: float = 0.0    # Net flow
+    whale_alert: float = 0.0         # Large transfer flag (0 or 1)
+
+    # Sentiment - Market psychology
+    fear_greed: float = 0.5          # 0-1, contrarian signal
+    social_volume: float = 0.5       # Normalized social activity
+    social_sentiment: float = 0.5    # Positive vs negative
+
+    # Multi-source feature cache
+    _expanded_features: Optional[Dict[str, float]] = field(default=None, repr=False)
+
+    def set_expanded_features(self, features: Dict[str, float]):
+        """Set expanded features from DataAggregator."""
+        self._expanded_features = features
+
+        # Map to dataclass fields
+        self.funding_rate_binance = features.get("funding_rate_binance", 0.0)
+        self.funding_rate_okx = features.get("funding_rate_okx", 0.0)
+        self.funding_divergence = features.get("funding_divergence", 0.0)
+        self.long_short_ratio = features.get("long_short_ratio", 1.0)
+        self.oi_change_1h = features.get("oi_change_1h", 0.0)
+        self.liquidation_pressure = features.get("liquidation_pressure", 0.0)
+
+        self.iv_atm = features.get("iv_atm", 0.6)
+        self.iv_skew = features.get("iv_skew", 0.0)
+        self.put_call_ratio = features.get("put_call_ratio", 1.0)
+        self.options_volume = features.get("options_volume", 0.0)
+
+        self.exchange_inflow = features.get("exchange_inflow", 0.0)
+        self.exchange_outflow = features.get("exchange_outflow", 0.0)
+        self.exchange_netflow = features.get("exchange_netflow", 0.0)
+        self.whale_alert = features.get("whale_alert", 0.0)
+
+        self.fear_greed = features.get("fear_greed", 0.5)
+        self.social_volume = features.get("social_volume", 0.5)
+        self.social_sentiment = features.get("social_sentiment", 0.5)
+
     def to_features(self) -> np.ndarray:
         """Convert to feature vector for ML models. Returns 18 features normalized to [-1, 1]."""
         velocity = self._velocity(3)  # Shorter window
@@ -147,6 +211,88 @@ class MarketState:
             self.vol_regime,  # 0 or 1
             self.trend_regime,  # 0 or 1
         ], dtype=np.float32)
+
+    def to_expanded_features(self) -> np.ndarray:
+        """
+        Convert to expanded feature vector for multi-source ML models.
+
+        Returns 42 features:
+        - 18 original (Binance + Polymarket + position)
+        - 6 Coinglass (funding, OI, liquidations)
+        - 4 Deribit (options IV, skew, P/C ratio)
+        - 4 On-chain (exchange flows, whale alerts)
+        - 3 Sentiment (Fear & Greed, social)
+        - 7 Reserved for future sources
+
+        All normalized to [-1, 1] range.
+        """
+        # Start with original 18 features
+        base = self.to_features()
+
+        # Helper to clamp values
+        def clamp(x, lo=-1.0, hi=1.0):
+            return max(lo, min(hi, float(x)))
+
+        # === COINGLASS (6) ===
+        coinglass = np.array([
+            # Funding rates (typically -0.1% to 0.1%, scale by 100)
+            clamp(self.funding_rate_binance * 100),
+            clamp(self.funding_rate_okx * 100),
+            clamp(self.funding_divergence * 200),  # Divergence is smaller
+            # Long/short ratio (typically 0.5-2.0, center at 1.0)
+            clamp((self.long_short_ratio - 1.0) * 2),
+            # OI change (typically -10% to +10%)
+            clamp(self.oi_change_1h * 10),
+            # Liquidation pressure (already -1 to 1)
+            clamp(self.liquidation_pressure),
+        ], dtype=np.float32)
+
+        # === DERIBIT OPTIONS (4) ===
+        deribit = np.array([
+            # ATM IV (typically 0.3-1.5, center at 0.6)
+            clamp((self.iv_atm - 0.6) * 2),
+            # IV skew (typically -0.1 to 0.1)
+            clamp(self.iv_skew * 10),
+            # Put/call ratio (typically 0.5-2.0, center at 1.0)
+            clamp((self.put_call_ratio - 1.0)),
+            # Options volume (log-normalized, 0-1)
+            clamp(self.options_volume / 10000, 0, 1),
+        ], dtype=np.float32)
+
+        # === ON-CHAIN (4) ===
+        onchain = np.array([
+            # Exchange netflow (positive = bearish)
+            clamp(self.exchange_netflow / 1000),
+            # Inflow/outflow ratio (center at 1.0)
+            clamp(self._safe_ratio(self.exchange_inflow, self.exchange_outflow)),
+            # Whale alert (0 or 1)
+            clamp(self.whale_alert, 0, 1),
+            # Reserved
+            0.0,
+        ], dtype=np.float32)
+
+        # === SENTIMENT (3) ===
+        sentiment = np.array([
+            # Fear & Greed (0-1, center at 0.5)
+            (self.fear_greed - 0.5) * 2,
+            # Social volume (0-1)
+            clamp(self.social_volume, 0, 1),
+            # Social sentiment (0-1, center at 0.5)
+            (self.social_sentiment - 0.5) * 2,
+        ], dtype=np.float32)
+
+        # === RESERVED (7) ===
+        reserved = np.zeros(7, dtype=np.float32)
+
+        # Concatenate all
+        return np.concatenate([base, coinglass, deribit, onchain, sentiment, reserved])
+
+    def _safe_ratio(self, a: float, b: float) -> float:
+        """Calculate ratio with safe division, centered at 1.0."""
+        if b == 0:
+            return 0.0 if a == 0 else 1.0
+        ratio = a / b
+        return (ratio - 1.0)  # Center at 0
 
     def _velocity(self, window: int = 5) -> float:
         """Prob change over last N ticks."""

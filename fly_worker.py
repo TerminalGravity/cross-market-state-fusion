@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-Fly.io Worker: 24/7 Paper Trading Service (HiFi Proxy System)
+Fly.io Worker: 24/7 Trading Service (Direct Connection from Toronto)
 
 Runs the RL inference loop, manages WebSocket streams,
 persists to PostgreSQL, and sends Discord alerts.
 
-Uses centralized HiFi proxy for zero Cloudflare blocks via Decodo residential SOCKS5.
+Deployed to Fly.io Toronto (yyz) region - direct access to Polymarket
+without proxy (Cloudflare allows Canadian datacenter IPs).
+
+Features:
+- Real-time error monitoring with Discord alerts
+- Connection health tracking
+- Automatic recovery on disconnects
+- Rate-limited alerts to avoid spam
 
 Usage:
     # Paper trading (default)
@@ -18,10 +25,9 @@ Environment Variables:
     DATABASE_URL: PostgreSQL connection URL
     TRADING_MODE: 'paper' or 'live' (default: paper)
     TRADE_SIZE: Trade size in dollars (default: 50)
-    DISCORD_WEBHOOK_URL: Discord webhook for alerts
+    DISCORD_WEBHOOK_URL: Discord webhook for alerts + error monitoring
     POLYMARKET_PRIVATE_KEY: Required for live trading
     POLYMARKET_FUNDER_ADDRESS: Required for live trading
-    RESIDENTIAL_SOCKS5_URL: Decodo SOCKS5 proxy (e.g., socks5://user-country-ca:pass@gate.decodo.com:7000)
 """
 import asyncio
 import os
@@ -56,6 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from db.connection import Database
 from helpers.discord import DiscordWebhook
+from helpers.error_monitor import get_error_monitor, install_log_handler
 from helpers.polymarket_api import get_15m_markets, Market
 from helpers.orderbook_wss import OrderbookStreamer, OrderbookState
 from helpers.binance_wss import BinanceStreamer
@@ -104,6 +111,7 @@ class Position:
     condition_id: str = ""
     trade_id: Optional[str] = None  # Database trade ID
     action_probs: Dict[str, float] = field(default_factory=dict)
+    entry_spread: float = 0.0  # Spread at entry for reward adjustment
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
@@ -119,6 +127,7 @@ class Position:
             "condition_id": self.condition_id,
             "trade_id": self.trade_id,
             "action_probs": self.action_probs,
+            "entry_spread": self.entry_spread,
         }
 
     @classmethod
@@ -139,6 +148,7 @@ class Position:
             condition_id=data.get("condition_id", ""),
             trade_id=data.get("trade_id"),
             action_probs=data.get("action_probs", {}),
+            entry_spread=data.get("entry_spread", 0.0),
         )
 
 
@@ -208,6 +218,10 @@ class TradingWorker:
         # Components
         self.db = Database()
         self.discord = DiscordWebhook()
+        self.error_monitor = get_error_monitor()
+
+        # Install error monitoring log handler (captures WARNING+ to Discord)
+        install_log_handler()
 
         # Sessions (dual mode: separate sessions for paper and live)
         self.paper_session_id: Optional[str] = None
@@ -279,13 +293,14 @@ class TradingWorker:
         self.system_healthy = True
 
         # Position timeout settings
-        self.position_timeout_minutes = 2  # Force close 2 min before expiry
+        self.position_timeout_minutes = 3  # Force close 3 min before expiry (avoid last-minute volatility)
         self.position_max_age_seconds = 840  # 14 minutes max (for 15-min markets)
 
         # Take-profit / Stop-loss thresholds (override RL when hit)
-        # Binary markets: lock in gains before resolution swing
-        self.tp_threshold = 2.00   # +200% → force sell (e.g., 10¢→30¢, locks 3x gain)
-        self.sl_threshold = -0.50  # -50% → force sell (prevents -100% wipeout)
+        # Low-entry strategy: buy at <25%, sell when price moves up
+        # MCP analysis shows best EV at cheap entries, lock profits early
+        self.tp_threshold = 0.75   # +75% → force sell (e.g., 12¢→21¢, locks 1.75x gain)
+        self.sl_threshold = -0.35  # -35% → force sell (tighter stop for capital preservation)
         self.tp_sl_enabled = True  # Enable TP/SL safety net
 
         # Control
@@ -301,7 +316,12 @@ class TradingWorker:
         if USE_MLX:
             self.strategy = RLStrategy()
             self.strategy.load(self.model_path)
-            self.strategy.training = False
+            self.strategy.training = True  # ENABLE ONLINE LEARNING
+            logger.info("[RL] Online learning ENABLED - agent will adapt in real-time")
+
+        # Track previous states for RL experience storage
+        self._prev_states: Dict[str, MarketState] = {}
+        self._prev_actions: Dict[str, Action] = {}
 
         # Connect to database
         await self.db.connect()
@@ -650,8 +670,14 @@ class TradingWorker:
         if USE_MLX:
             import mlx.core as mx
             features = state.to_features()
+
+            # Build temporal state from history (required for temporal-aware Actor)
+            temporal_state = self.strategy._get_temporal_state(state.asset, features)
+
             features_mx = mx.array(features.reshape(1, -1))
-            probs = self.strategy.actor(features_mx)
+            temporal_mx = mx.array(temporal_state.reshape(1, -1))
+
+            probs = self.strategy.actor(features_mx, temporal_mx)
             probs_np = np.array(probs[0])
         else:
             probs_np = self.strategy.get_action_probs(state)
@@ -733,62 +759,13 @@ class TradingWorker:
             return
 
         if action == Action.BUY and (not pos or pos.size == 0):
-            # === LIQUIDITY & CONFIDENCE FILTERS (LIVE MODE ONLY) ===
+            # === MINIMAL FILTERS (LIVE MODE) - Let the model trade freely ===
             if mode == 'live':
-                # Skip if spread too wide (low liquidity indicator)
-                MAX_SPREAD = 0.08  # 8% max spread
-                if state.spread > MAX_SPREAD:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - spread {state.spread*100:.1f}% > {MAX_SPREAD*100:.0f}% max"
-                    )
-                    return
-
-                # Skip if confidence too low (signal quality filter)
-                MIN_CONFIDENCE = 0.40  # 40% minimum confidence for live trades
-                if confidence < MIN_CONFIDENCE:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - confidence {confidence*100:.0f}% < {MIN_CONFIDENCE*100:.0f}% min"
-                    )
-                    return
-
-                # Skip if market expiring soon (liquidity dries up near expiry)
-                MIN_TIME_REMAINING = 0.20  # 20% = 3 minutes for 15-min market
+                # Only skip if market expiring soon (liquidity dries up)
+                MIN_TIME_REMAINING = 0.15  # 15% = ~2 minutes for 15-min market
                 if state.time_remaining < MIN_TIME_REMAINING:
                     logger.info(
-                        f"[LIVE] Skipping {market.asset} - market expiring ({state.time_remaining*100:.0f}% remaining < {MIN_TIME_REMAINING*100:.0f}% min)"
-                    )
-                    return
-
-                # Skip if orderbook too thin (not enough sellers)
-                ob_up = self.orderbook_streamer.get_orderbook(market.condition_id, "UP")
-                if ob_up and ob_up.asks:
-                    # Sum available liquidity on ask side (first 5 levels)
-                    ask_depth = sum(size for _, size in ob_up.asks[:5])
-                    MIN_DEPTH = 10.0  # Minimum $10 of ask liquidity
-                    expected_shares = self.trade_size * 0.5 / state.prob if state.prob > 0 else 0
-                    if ask_depth < MIN_DEPTH or ask_depth < expected_shares * 1.5:
-                        logger.info(
-                            f"[LIVE] Skipping {market.asset} - thin orderbook (ask depth ${ask_depth:.0f} < ${max(MIN_DEPTH, expected_shares*1.5):.0f} needed)"
-                        )
-                        return
-                elif not ob_up or not ob_up.asks:
-                    logger.info(f"[LIVE] Skipping {market.asset} - no asks in orderbook")
-                    return
-
-                # Skip if entry price too high (limited upside)
-                # Buying at 70% and winning = 43% return
-                # Buying at 50% and winning = 100% return
-                # Buying at 30% and winning = 233% return
-                MAX_ENTRY_PRICE = 0.70  # 70% max - ensures at least 43% return on win
-                MIN_ENTRY_PRICE = 0.20  # 20% min - avoid extreme prices (illiquid/high risk)
-                if state.prob > MAX_ENTRY_PRICE:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% > {MAX_ENTRY_PRICE*100:.0f}% max (limited upside)"
-                    )
-                    return
-                if state.prob < MIN_ENTRY_PRICE:
-                    logger.info(
-                        f"[LIVE] Skipping {market.asset} - price {state.prob*100:.0f}% < {MIN_ENTRY_PRICE*100:.0f}% min (too risky)"
+                        f"[LIVE] Skipping {market.asset} - market expiring ({state.time_remaining*100:.0f}% remaining)"
                     )
                     return
 
@@ -934,7 +911,8 @@ class TradingWorker:
                 entry_time=datetime.now(timezone.utc),
                 condition_id=cid,
                 trade_id=trade_id,
-                action_probs={"hold": float(probs[0]), "buy": float(probs[1]), "sell": float(probs[2])}
+                action_probs={"hold": float(probs[0]), "buy": float(probs[1]), "sell": float(probs[2])},
+                entry_spread=state.spread  # Track spread for reward adjustment
             )
 
             # Update mode-specific stats
@@ -960,6 +938,12 @@ class TradingWorker:
                     confidence=confidence,
                     session_pnl=session_pnl
                 )
+
+            # === RL ONLINE LEARNING: Track state at entry for experience storage ===
+            if USE_MLX and self.strategy.training:
+                self._prev_states[cid] = state
+                self._prev_actions[cid] = action
+                logger.debug(f"[RL] Tracking entry state for {market.asset}")
 
         elif action == Action.SELL and pos and pos.size > 0:
             # Close position
@@ -1079,6 +1063,25 @@ class TradingWorker:
             if mode == 'paper':
                 await self._check_milestones()
 
+            # === RL ONLINE LEARNING: Store experience after trade closes ===
+            if USE_MLX and self.strategy.training and cid in self._prev_states:
+                prev_state = self._prev_states[cid]
+                prev_action = self._prev_actions.get(cid, Action.HOLD)
+
+                # REWARD: Use PnL adjusted for spread cost (critical for proper learning)
+                # Entry spread was stored when position opened
+                spread_cost = pos.entry_spread * pos.size if hasattr(pos, 'entry_spread') else 0
+                adjusted_pnl = pnl - spread_cost
+
+                # Store experience: (prev_state, action, reward, next_state, done)
+                self.strategy.store(prev_state, prev_action, adjusted_pnl, state, done=True)
+                logger.debug(f"[RL] Stored experience: pnl={pnl:.3f}, adj_pnl={adjusted_pnl:.3f}, spread_cost={spread_cost:.3f}")
+
+                # Clear tracked states
+                del self._prev_states[cid]
+                if cid in self._prev_actions:
+                    del self._prev_actions[cid]
+
             # Clear position
             positions[cid] = Position(asset=market.asset)
 
@@ -1119,17 +1122,10 @@ class TradingWorker:
 
                     live_checked += 1
                     market = self.markets.get(cid)
-                    if not market:
-                        # Market expired/rotated - cleanup stale position
-                        await self._cleanup_stale_position(
-                            cid, pos, mode='live',
-                            positions=self.live_positions,
-                            session_id=self.live_session_id
-                        )
-                        live_closed += 1
-                        continue
 
                     # Get current price from orderbook for TP/SL check
+                    # CRITICAL: Get orderbook BEFORE checking if market exists
+                    # This prevents premature cleanup when markets rotate but position is still active
                     current_price = None
                     if pos.side == "UP":
                         ob = self.orderbook_streamer.get_orderbook(cid, "UP")
@@ -1137,6 +1133,62 @@ class TradingWorker:
                         ob = self.orderbook_streamer.get_orderbook(cid, "DOWN")
                     if ob and ob.mid_price:
                         current_price = ob.mid_price
+
+                    # CRITICAL FIX: Only cleanup if BOTH market missing AND orderbook stale
+                    # This prevents deleting positions when refresh_markets() rotates to new markets
+                    # but the old market is still active (has orderbook data)
+                    if not market:
+                        if ob and ob.mid_price and current_price is not None:
+                            # Orderbook exists - market still active, just not in self.markets
+                            # Check TP/SL using orderbook data only (no market end_time check)
+                            if self.tp_sl_enabled and pos.entry_price > 0:
+                                if pos.side == "UP":
+                                    pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+                                else:
+                                    pnl_pct = ((1 - current_price) - pos.entry_price) / pos.entry_price
+
+                                # Take-profit
+                                if pnl_pct >= self.tp_threshold:
+                                    logger.critical(f"[SAFETY] 🚨 TRIGGERED: LIVE {pos.asset} - take_profit ({pnl_pct*100:+.1f}% >= {self.tp_threshold*100:.0f}%) [market rotated]")
+                                    live_closed += 1
+                                    await self._emergency_close_position_no_market(
+                                        cid, pos, mode='live',
+                                        executor=self.live_executor,
+                                        positions=self.live_positions,
+                                        session_id=self.live_session_id,
+                                        reason=f"take_profit ({pnl_pct*100:+.1f}%)",
+                                        current_price=current_price,
+                                        orderbook=ob  # Pass orderbook for realistic exit pricing
+                                    )
+                                    continue
+
+                                # Stop-loss
+                                if pnl_pct <= self.sl_threshold:
+                                    logger.critical(f"[SAFETY] 🚨 TRIGGERED: LIVE {pos.asset} - stop_loss ({pnl_pct*100:+.1f}% <= {self.sl_threshold*100:.0f}%) [market rotated]")
+                                    live_closed += 1
+                                    await self._emergency_close_position_no_market(
+                                        cid, pos, mode='live',
+                                        executor=self.live_executor,
+                                        positions=self.live_positions,
+                                        session_id=self.live_session_id,
+                                        reason=f"stop_loss ({pnl_pct*100:+.1f}%)",
+                                        current_price=current_price,
+                                        orderbook=ob  # Pass orderbook for realistic exit pricing
+                                    )
+                                    continue
+
+                                # Position still healthy, log and continue monitoring
+                                logger.debug(f"[SAFETY] LIVE {pos.asset} monitoring (market rotated but orderbook active): PnL={pnl_pct*100:+.1f}%")
+                            continue
+                        else:
+                            # No orderbook AND no market - truly stale, cleanup
+                            await self._cleanup_stale_position(
+                                cid, pos, mode='live',
+                                positions=self.live_positions,
+                                session_id=self.live_session_id
+                            )
+                            live_closed += 1
+                            continue
 
                     # Check if position needs emergency close (including TP/SL)
                     should_close, reason = self._should_emergency_close(pos, market, now, current_price)
@@ -1168,17 +1220,8 @@ class TradingWorker:
 
                     paper_checked += 1
                     market = self.markets.get(cid)
-                    if not market:
-                        # Market expired/rotated - cleanup stale position
-                        await self._cleanup_stale_position(
-                            cid, pos, mode='paper',
-                            positions=self.paper_positions,
-                            session_id=self.paper_session_id
-                        )
-                        paper_closed += 1
-                        continue
 
-                    # Get current price from orderbook for TP/SL check
+                    # Get current price from orderbook for TP/SL check BEFORE checking market
                     current_price = None
                     if pos.side == "UP":
                         ob = self.orderbook_streamer.get_orderbook(cid, "UP")
@@ -1186,6 +1229,54 @@ class TradingWorker:
                         ob = self.orderbook_streamer.get_orderbook(cid, "DOWN")
                     if ob and ob.mid_price:
                         current_price = ob.mid_price
+
+                    # CRITICAL FIX: Only cleanup if BOTH market missing AND orderbook stale
+                    if not market:
+                        if ob and ob.mid_price and current_price is not None:
+                            # Orderbook exists - market still active
+                            if self.tp_sl_enabled and pos.entry_price > 0:
+                                if pos.side == "UP":
+                                    pnl_pct = (current_price - pos.entry_price) / pos.entry_price
+                                else:
+                                    pnl_pct = ((1 - current_price) - pos.entry_price) / pos.entry_price
+
+                                if pnl_pct >= self.tp_threshold:
+                                    logger.warning(f"[SAFETY] TRIGGERED: PAPER {pos.asset} - take_profit ({pnl_pct*100:+.1f}%) [market rotated]")
+                                    paper_closed += 1
+                                    await self._emergency_close_position_no_market(
+                                        cid, pos, mode='paper',
+                                        executor=self.paper_executor,
+                                        positions=self.paper_positions,
+                                        session_id=self.paper_session_id,
+                                        reason=f"take_profit ({pnl_pct*100:+.1f}%)",
+                                        current_price=current_price,
+                                        orderbook=ob  # Pass orderbook for realistic exit pricing
+                                    )
+                                    continue
+
+                                if pnl_pct <= self.sl_threshold:
+                                    logger.warning(f"[SAFETY] TRIGGERED: PAPER {pos.asset} - stop_loss ({pnl_pct*100:+.1f}%) [market rotated]")
+                                    paper_closed += 1
+                                    await self._emergency_close_position_no_market(
+                                        cid, pos, mode='paper',
+                                        executor=self.paper_executor,
+                                        positions=self.paper_positions,
+                                        session_id=self.paper_session_id,
+                                        reason=f"stop_loss ({pnl_pct*100:+.1f}%)",
+                                        current_price=current_price,
+                                        orderbook=ob  # Pass orderbook for realistic exit pricing
+                                    )
+                                    continue
+                            continue
+                        else:
+                            # No orderbook AND no market - truly stale
+                            await self._cleanup_stale_position(
+                                cid, pos, mode='paper',
+                                positions=self.paper_positions,
+                                session_id=self.paper_session_id
+                            )
+                            paper_closed += 1
+                            continue
 
                     should_close, reason = self._should_emergency_close(pos, market, now, current_price)
                     if should_close:
@@ -1318,22 +1409,17 @@ class TradingWorker:
         Emergency close a position at market price.
 
         Called by safety system when position must be closed immediately.
+        Uses realistic exit pricing by walking the orderbook.
         """
         try:
-            # Get current price (try orderbook first, fallback to entry price)
-            ob_up = self.orderbook_streamer.get_orderbook(cid, "UP")
-            exit_price = ob_up.mid_price if ob_up and ob_up.mid_price else pos.entry_price
-
-            # Calculate PnL
-            if pos.side == "UP":
-                pnl = (exit_price - pos.entry_price) * (pos.size / pos.entry_price)
-            else:
-                pnl = ((1 - exit_price) - pos.entry_price) * (pos.size / pos.entry_price)
+            # Get correct orderbook based on position side
+            ob = self.orderbook_streamer.get_orderbook(cid, pos.side if pos.side else "UP")
+            mid_price = ob.mid_price if ob and ob.mid_price else pos.entry_price
 
             duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
             binance_price = self.price_streamer.get_price(market.asset)
 
-            # Execute the sell order - get actual shares for live mode
+            # Calculate shares to sell FIRST (needed for realistic pricing)
             if mode == 'live' and pos.token_id:
                 wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
                 if wallet:
@@ -1347,6 +1433,54 @@ class TradingWorker:
             else:
                 shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
 
+            # CRITICAL: Calculate REALISTIC exit price by walking the orderbook
+            exit_price = mid_price  # fallback
+            slippage_pct = 0.0
+
+            if ob and shares_to_sell > 0:
+                fill_result = ob.calculate_sell_fill_price(shares_to_sell)
+                if fill_result[0] is not None:
+                    realistic_fill_price = fill_result[0]
+                    fillable_shares = fill_result[1]
+                    can_fill_all = fill_result[2]
+
+                    # Calculate slippage from mid_price
+                    if mid_price and mid_price > 0:
+                        slippage_pct = (mid_price - realistic_fill_price) / mid_price
+
+                    # Log liquidity situation
+                    bid_depth = ob.total_bid_depth
+                    logger.info(
+                        f"[EXIT LIQUIDITY] {market.asset}: selling {shares_to_sell:.2f} shares | "
+                        f"mid={mid_price:.3f} | realistic_fill={realistic_fill_price:.3f} | "
+                        f"slippage={slippage_pct*100:.1f}% | bid_depth={bid_depth:.1f} | "
+                        f"can_fill_all={can_fill_all}"
+                    )
+
+                    # Use realistic price for execution
+                    exit_price = realistic_fill_price
+
+                    # Warn if significant slippage
+                    if slippage_pct > 0.10:
+                        logger.warning(
+                            f"[EXIT] HIGH SLIPPAGE WARNING {market.asset}: {slippage_pct*100:.1f}% slippage | "
+                            f"mid={mid_price:.3f} -> realistic={realistic_fill_price:.3f}"
+                        )
+
+                    if not can_fill_all:
+                        logger.critical(
+                            f"[EXIT] INSUFFICIENT LIQUIDITY {market.asset}: need {shares_to_sell:.2f} shares, "
+                            f"only {fillable_shares:.2f} available in book!"
+                        )
+                else:
+                    logger.warning(f"[EXIT] No bid liquidity for {market.asset} - using mid_price as fallback")
+
+            # Calculate PnL using realistic exit price
+            if pos.side == "UP":
+                pnl = (exit_price - pos.entry_price) * (pos.size / pos.entry_price)
+            else:
+                pnl = ((1 - exit_price) - pos.entry_price) * (pos.size / pos.entry_price)
+
             if shares_to_sell > 0 and executor:
                 try:
                     # Use retry logic for LIVE mode to handle low liquidity
@@ -1354,7 +1488,7 @@ class TradingWorker:
                         order = executor.place_sell_with_retry(
                             token_id=pos.token_id,
                             shares=shares_to_sell,
-                            current_price=exit_price,
+                            current_price=exit_price,  # Now uses realistic fill price
                             asset=market.asset
                         )
                     else:
@@ -1415,6 +1549,166 @@ class TradingWorker:
             logger.error(f"[SAFETY] Emergency close failed for {market.asset}: {e}")
             # Last resort: clear local state anyway to prevent double-close attempts
             positions[cid] = Position(asset=market.asset)
+
+    async def _emergency_close_position_no_market(
+        self,
+        cid: str,
+        pos: Position,
+        mode: str,
+        executor,
+        positions: Dict[str, Position],
+        session_id: str,
+        reason: str,
+        current_price: float,
+        orderbook: Optional[OrderbookState] = None
+    ) -> None:
+        """
+        Emergency close a position when market object is not available.
+
+        Called when markets have rotated but orderbook data is still active.
+        Uses position's asset and provided current_price instead of market object.
+        Now uses realistic exit pricing by walking the orderbook.
+        """
+        try:
+            asset = pos.asset
+
+            # Calculate shares to sell FIRST (needed for realistic pricing)
+            if mode == 'live' and pos.token_id:
+                wallet = os.getenv("POLYMARKET_FUNDER_ADDRESS", "")
+                if wallet:
+                    shares_to_sell = await get_onchain_shares(pos.token_id, wallet)
+                    if shares_to_sell <= 0:
+                        logger.warning(f"[LIVE] No on-chain shares for {asset} - clearing ghost position")
+                        positions[cid] = Position(asset=asset)
+                        return
+                else:
+                    shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+            else:
+                shares_to_sell = pos.size / pos.entry_price if pos.entry_price > 0 else 0
+
+            # CRITICAL: Calculate REALISTIC exit price by walking the orderbook
+            # This prevents using mid_price when actual bid depth is much lower
+            exit_price = current_price  # fallback to mid_price
+            realistic_fill_price = None
+            slippage_pct = 0.0
+
+            if orderbook and shares_to_sell > 0:
+                fill_result = orderbook.calculate_sell_fill_price(shares_to_sell)
+                if fill_result[0] is not None:
+                    realistic_fill_price = fill_result[0]
+                    fillable_shares = fill_result[1]
+                    can_fill_all = fill_result[2]
+
+                    # Calculate slippage from mid_price
+                    if orderbook.mid_price and orderbook.mid_price > 0:
+                        slippage_pct = (orderbook.mid_price - realistic_fill_price) / orderbook.mid_price
+
+                    # Log liquidity situation
+                    bid_depth = orderbook.total_bid_depth
+                    logger.info(
+                        f"[EXIT LIQUIDITY] {asset}: selling {shares_to_sell:.2f} shares | "
+                        f"mid={current_price:.3f} | realistic_fill={realistic_fill_price:.3f} | "
+                        f"slippage={slippage_pct*100:.1f}% | bid_depth={bid_depth:.1f} | "
+                        f"can_fill_all={can_fill_all}"
+                    )
+
+                    # Use realistic price for execution (more aggressive)
+                    exit_price = realistic_fill_price
+
+                    # Warn if significant slippage
+                    if slippage_pct > 0.10:  # > 10% slippage
+                        logger.warning(
+                            f"[EXIT] HIGH SLIPPAGE WARNING {asset}: {slippage_pct*100:.1f}% slippage | "
+                            f"mid={current_price:.3f} -> realistic={realistic_fill_price:.3f}"
+                        )
+
+                    # Critical: Check if we can actually exit
+                    if not can_fill_all:
+                        logger.critical(
+                            f"[EXIT] INSUFFICIENT LIQUIDITY {asset}: need {shares_to_sell:.2f} shares, "
+                            f"only {fillable_shares:.2f} available in book!"
+                        )
+                else:
+                    logger.warning(f"[EXIT] No bid liquidity for {asset} - using mid_price as fallback")
+            elif not orderbook:
+                logger.warning(f"[EXIT] No orderbook data for {asset} - using mid_price fallback")
+
+            # Calculate PnL using realistic exit price
+            if pos.side == "UP":
+                pnl = (exit_price - pos.entry_price) * (pos.size / pos.entry_price)
+            else:
+                pnl = ((1 - exit_price) - pos.entry_price) * (pos.size / pos.entry_price)
+
+            duration = int((datetime.now(timezone.utc) - pos.entry_time).total_seconds()) if pos.entry_time else 0
+            binance_price = self.price_streamer.get_price(asset)
+
+            if shares_to_sell > 0 and executor:
+                try:
+                    # Use retry logic for LIVE mode to handle low liquidity
+                    if mode == 'live':
+                        # Pass realistic price (not mid_price) to executor
+                        order = executor.place_sell_with_retry(
+                            token_id=pos.token_id,
+                            shares=shares_to_sell,
+                            current_price=exit_price,  # Now uses realistic fill price
+                            asset=asset
+                        )
+                    else:
+                        order = executor.place_market_order(
+                            token_id=pos.token_id,
+                            amount=shares_to_sell,
+                            side=OrderSide.SELL,
+                            asset=asset
+                        )
+                    logger.info(f"[{mode.upper()}] Emergency sell executed (no market): {order.status if order else 'submitted'}")
+                except Exception as e:
+                    logger.error(f"[{mode.upper()}] Emergency sell order failed: {e}")
+
+            # Record to database
+            if pos.trade_id:
+                await self.db.record_trade_close(
+                    trade_id=pos.trade_id,
+                    exit_price=exit_price,
+                    exit_binance_price=binance_price,
+                    exit_reason=f"emergency:{reason}",
+                    pnl=pnl,
+                    duration_seconds=duration
+                )
+
+            # Update stats
+            if mode == 'paper':
+                self.paper_total_pnl += pnl
+                if pnl > 0:
+                    self.paper_win_count += 1
+            else:
+                self.live_total_pnl += pnl
+                if pnl > 0:
+                    self.live_win_count += 1
+
+            logger.warning(
+                f"[{mode.upper()}] EMERGENCY CLOSE {asset} [market rotated] | reason={reason} | "
+                f"PnL: {'+'if pnl >= 0 else ''}{pnl:.2f}"
+            )
+
+            # Discord alert for emergency close
+            await self.discord.send_error(
+                message=f"⚠️ Emergency Position Close ({mode.upper()}) [Market Rotated]",
+                details=(
+                    f"**Asset:** {asset}\n"
+                    f"**Reason:** {reason}\n"
+                    f"**Entry:** {pos.entry_price*100:.1f}%\n"
+                    f"**Exit:** {exit_price*100:.1f}%\n"
+                    f"**PnL:** ${pnl:+.2f}\n"
+                    f"**Duration:** {duration}s"
+                )
+            )
+
+            # Clear position
+            positions[cid] = Position(asset=asset)
+
+        except Exception as e:
+            logger.error(f"[SAFETY] Emergency close (no market) failed for {pos.asset}: {e}")
+            positions[cid] = Position(asset=pos.asset)
 
     async def _check_orderbook_health(self) -> None:
         """
@@ -1546,6 +1840,15 @@ class TradingWorker:
             except Exception as e:
                 logger.error(f"Metrics recording failed: {e}")
 
+    async def _health_summary_loop(self) -> None:
+        """Background task: send health summary every 6 hours."""
+        while self.running:
+            await asyncio.sleep(6 * 3600)  # Every 6 hours
+            try:
+                await self.error_monitor.send_health_summary()
+            except Exception as e:
+                logger.error(f"Health summary failed: {e}")
+
     async def _daily_summary_loop(self) -> None:
         """Background task: send daily summary at midnight UTC."""
         while self.running:
@@ -1602,6 +1905,7 @@ class TradingWorker:
                 asyncio.create_task(self._metrics_loop()),
                 asyncio.create_task(self._daily_summary_loop()),
                 asyncio.create_task(self._position_safety_loop()),  # CRITICAL: Position safety monitor
+                asyncio.create_task(self._health_summary_loop()),  # Health summary every 6 hours
             ]
 
             # Add profit monitor if enabled
@@ -1697,6 +2001,22 @@ class TradingWorker:
                     except Exception as e:
                         logger.error(f"Error processing {market.asset}: {e}")
 
+                # === RL ONLINE LEARNING: Update policy when buffer is full ===
+                if USE_MLX and self.strategy.training:
+                    if len(self.strategy.experiences) >= self.strategy.buffer_size:
+                        try:
+                            metrics = self.strategy.update()
+                            if metrics:
+                                logger.info(
+                                    f"[RL] PPO Update: loss={metrics['policy_loss']:.4f}, "
+                                    f"entropy={metrics['entropy']:.3f}, KL={metrics['approx_kl']:.4f}"
+                                )
+                                # Save model after each update
+                                self.strategy.save(self.model_path)
+                                logger.info(f"[RL] Model saved to {self.model_path}")
+                        except Exception as e:
+                            logger.error(f"[RL] PPO update failed: {e}")
+
                 await asyncio.sleep(0.5)
 
         except Exception as e:
@@ -1758,6 +2078,7 @@ class TradingWorker:
         # Close connections
         await self.db.close()
         await self.discord.close()
+        await self.error_monitor.close()
 
         logger.info("Shutdown complete")
 
