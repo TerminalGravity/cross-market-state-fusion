@@ -1,0 +1,39 @@
+{
+  "mcpServers": {
+    "polymarket-trader-remote": {
+      "type": "http",
+      "url": "https://polymarket-mcp.fly.dev/mcp"
+    },
+    "polymarket-trader": {
+      "command": "uv",
+      "args": ["run", "python", "polymarket_trader_mcp.py"],
+      "env": {
+        "POLYMARKET_PRIVATE_KEY": "${POLYMARKET_PRIVATE_KEY}",
+        "POLYMARKET_FUNDER_ADDRESS": "${POLYMARKET_FUNDER_ADDRESS}",
+        "POLYMARKET_SIGNATURE_TYPE": "${POLYMARKET_SIGNATURE_TYPE}",
+        "POLYMARKET_API_KEY": "${POLYMARKET_API_KEY}",
+        "POLYMARKET_API_SECRET": "${POLYMARKET_API_SECRET}",
+        "POLYMARKET_API_PASSPHRASE": "${POLYMARKET_API_PASSPHRASE}",
+        "POLYGON_RPC_URL": "${POLYGON_RPC_URL}",
+        "POLYGONSCAN_API_KEY": "${POLYGONSCAN_API_KEY}"
+      }
+    },
+    "polymarket-infra": {
+      "command": "uv",
+      "args": ["run", "python", "polymarket_infra_mcp.py"],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}",
+        "POLYMARKET_PRIVATE_KEY": "${POLYMARKET_PRIVATE_KEY}",
+        "POLYMARKET_FUNDER_ADDRESS": "${POLYMARKET_FUNDER_ADDRESS}",
+        "POLYMARKET_SIGNATURE_TYPE": "${POLYMARKET_SIGNATURE_TYPE}"
+      }
+    },
+    "polymarket-alpha": {
+      "command": "uv",
+      "args": ["run", "python", "polymarket_alpha_mcp.py"],
+      "env": {
+        "DATABASE_URL": "${DATABASE_URL}"
+      }
+    }
+  }
+}

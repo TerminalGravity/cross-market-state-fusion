@@ -1,0 +1,37 @@
+# Fly.io config for MCP servers
+# Deploy with: fly deploy -c fly.mcp.toml
+
+app = "polymarket-mcp"
+primary_region = "yyz"  # Toronto, Canada - closest to residential proxy
+
+[build]
+  dockerfile = "Dockerfile.mcp"
+
+[env]
+  PYTHONUNBUFFERED = "1"
+
+# HTTP service for MCP
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 100
+    soft_limit = 50
+
+# Health check using custom /health endpoint (returns 200 OK)
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "30s"
+  method = "GET"
+  path = "/health"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

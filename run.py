@@ -50,6 +50,7 @@ class Position:
     entry_time: Optional[datetime] = None
     entry_prob: float = 0.0
     time_remaining_at_entry: float = 0.0
+    entry_spread: float = 0.0  # Spread at entry time for reward adjustment
 
 
 class TradingEngine:
@@ -150,7 +151,10 @@ class TradingEngine:
                 shares = pos.size / pos.entry_price
                 pnl = (price - pos.entry_price) * shares
                 self._record_trade(pos, price, pnl, "CLOSE UP", cid=cid)
-                self.pending_rewards[cid] = pnl  # Pure realized PnL reward
+                # Spread-adjusted reward: "wide spread + weak signal = negative reward"
+                # nikshep: spread costs teach the model when edge isn't worth the cost
+                spread_penalty = (pos.entry_spread + state.spread) * 0.5 * shares
+                self.pending_rewards[cid] = pnl - spread_penalty
                 pos.size = 0
                 pos.side = None
                 return
@@ -160,7 +164,9 @@ class TradingEngine:
                 shares = pos.size / pos.entry_price
                 pnl = (exit_down_price - pos.entry_price) * shares  # DOWN token went up = profit
                 self._record_trade(pos, price, pnl, "CLOSE DOWN", cid=cid)
-                self.pending_rewards[cid] = pnl  # Pure realized PnL reward
+                # Spread-adjusted reward: penalize trades taken during wide spreads
+                spread_penalty = (pos.entry_spread + state.spread) * 0.5 * shares
+                self.pending_rewards[cid] = pnl - spread_penalty
                 pos.size = 0
                 pos.side = None
                 return
@@ -176,7 +182,8 @@ class TradingEngine:
                 pos.entry_time = datetime.now(timezone.utc)
                 pos.entry_prob = price
                 pos.time_remaining_at_entry = state.time_remaining
-                print(f"    OPEN {pos.asset} UP ({size_label}) ${trade_amount:.0f} @ {price:.3f}")
+                pos.entry_spread = state.spread  # Track spread for reward adjustment
+                print(f"    OPEN {pos.asset} UP ({size_label}) ${trade_amount:.0f} @ {price:.3f} (spread={state.spread:.3f})")
                 emit_trade(f"BUY_{size_label}", pos.asset, pos.size)
 
             elif action.is_sell:
@@ -186,7 +193,8 @@ class TradingEngine:
                 pos.entry_time = datetime.now(timezone.utc)
                 pos.entry_prob = price  # Keep original UP prob for reference
                 pos.time_remaining_at_entry = state.time_remaining
-                print(f"    OPEN {pos.asset} DOWN ({size_label}) ${trade_amount:.0f} @ {1 - price:.3f}")
+                pos.entry_spread = state.spread  # Track spread for reward adjustment
+                print(f"    OPEN {pos.asset} DOWN ({size_label}) ${trade_amount:.0f} @ {1 - price:.3f} (spread={state.spread:.3f})")
                 emit_trade(f"SELL_{size_label}", pos.asset, pos.size)
 
     def _record_trade(self, pos: Position, price: float, pnl: float, action: str, cid: str = None):
@@ -245,7 +253,9 @@ class TradingEngine:
                         pnl = (exit_down_price - pos.entry_price) * shares
 
                     self._record_trade(pos, price, pnl, f"FORCE CLOSE {pos.side}", cid=cid)
-                    self.pending_rewards[cid] = pnl  # Pure realized PnL reward
+                    # Spread-adjusted reward for force close too
+                    spread_penalty = (pos.entry_spread + state.spread) * 0.5 * shares
+                    self.pending_rewards[cid] = pnl - spread_penalty
                     pos.size = 0
                     pos.side = None
 
