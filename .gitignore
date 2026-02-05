@@ -19,6 +19,11 @@ wheels/
 .installed.cfg
 *.egg
 .env
+.env.*
+.env.live
+.env.local
+.env.production
+.env.staging
 .venv
 env/
 venv/
