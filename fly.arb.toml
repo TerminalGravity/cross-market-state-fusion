@@ -1,0 +1,16 @@
+app = "cross-market-state-fusion"
+primary_region = "yyz"  # Toronto - Polymarket accessible
+
+[build]
+  dockerfile = "Dockerfile.arb"
+
+[env]
+  TRADING_MODE = "paper"  # Start in paper mode
+  TRADE_SIZE = "50"
+  MIN_EDGE = "0.005"  # 0.5% minimum edge
+  SCAN_INTERVAL = "0.5"  # 500ms polling
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

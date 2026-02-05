@@ -1,0 +1,14 @@
+app = "cross-market-state-fusion"
+primary_region = "yyz"  # Toronto - closest to Polymarket
+
+[build]
+  dockerfile = "Dockerfile.hft"
+
+[env]
+  TRADING_MODE = "paper"
+  TRADE_SIZE = "5"
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

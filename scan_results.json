@@ -1,0 +1,38 @@
+{
+  "scan_time": "2026-01-09T04:41:04.223389+00:00",
+  "count": 4,
+  "markets": [
+    {
+      "asset": "BTC",
+      "condition_id": "0xf2d8811b076a37935780650727487fa0f76054ffa12905193ce0dc3b9f10bb61",
+      "price_up": 0.035,
+      "price_down": 0.965,
+      "sum": 1.0,
+      "arb_opportunity": false
+    },
+    {
+      "asset": "ETH",
+      "condition_id": "0x66c1cec243b211c5dd83c91f1e94c12238aaec373996378968c54578e3e12324",
+      "price_up": 0.035,
+      "price_down": 0.965,
+      "sum": 1.0,
+      "arb_opportunity": false
+    },
+    {
+      "asset": "SOL",
+      "condition_id": "0xb07457eff12eb725dbc1a87e8d8f7f75f2bf7d65addbf525cb0cf98e93cc93fd",
+      "price_up": 0.035,
+      "price_down": 0.965,
+      "sum": 1.0,
+      "arb_opportunity": false
+    },
+    {
+      "asset": "XRP",
+      "condition_id": "0xed0ad4abca76ac4ed3c4a82de2718aeaf8a6eb31a92be837b0d1c19364a7e11e",
+      "price_up": 0.135,
+      "price_down": 0.865,
+      "sum": 1.0,
+      "arb_opportunity": false
+    }
+  ]
+}

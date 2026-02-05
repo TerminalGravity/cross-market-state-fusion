@@ -1,0 +1,16 @@
+app = "cross-market-state-fusion"
+primary_region = "yyz"  # Toronto - Polymarket accessible
+
+[build]
+  dockerfile = "Dockerfile.ev"
+
+[env]
+  TRADING_MODE = "paper"  # Start paper, switch to live when funded
+  TRADE_SIZE = "5"
+  ENTRY_LOW = "0.00"
+  ENTRY_HIGH = "0.05"
+
+[[vm]]
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1

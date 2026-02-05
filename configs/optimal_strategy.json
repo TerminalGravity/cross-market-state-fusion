@@ -1,0 +1,52 @@
+{
+  "strategy_name": "ev_optimized_v1",
+  "created": "2026-01-08",
+  "based_on": "513 trade EV analysis",
+
+  "positive_ev_zones": {
+    "zone_1": {
+      "entry_low": 0.00,
+      "entry_high": 0.05,
+      "win_rate": 0.588,
+      "ev_per_share": 0.5632,
+      "confidence": "HIGH",
+      "note": "Best performing zone - focus here"
+    },
+    "zone_2": {
+      "entry_low": 0.15,
+      "entry_high": 0.20,
+      "win_rate": 0.545,
+      "ev_per_share": 0.3705,
+      "confidence": "HIGH",
+      "note": "Second best zone"
+    }
+  },
+
+  "negative_ev_zones_to_avoid": [
+    {"range": "50-55%", "ev": -0.1772, "note": "Heavy losses here"},
+    {"range": "55-60%", "ev": -0.2592, "note": "Avoid"},
+    {"range": "60-65%", "ev": -0.305, "note": "Avoid"},
+    {"range": "70-75%", "ev": -0.4583, "note": "Very bad"},
+    {"range": "85-90%", "ev": -0.7639, "note": "Worst zone"}
+  ],
+
+  "recommended_settings": {
+    "trade_size": 5,
+    "entry_low": 0.00,
+    "entry_high": 0.05,
+    "take_profit": 0.30,
+    "stop_loss": 0.05,
+    "max_positions": 4,
+    "daily_loss_limit": 50,
+    "consecutive_loss_limit": 3
+  },
+
+  "fly_secrets_to_set": {
+    "TRADE_SIZE": "5",
+    "TRADING_MODE": "live",
+    "SIGNAL_ENTRY_LOW": "0.00",
+    "SIGNAL_ENTRY_HIGH": "0.05"
+  },
+
+  "restart_command": "fly machines start 78172d2c0e0778 -a cross-market-state-fusion"
+}

@@ -759,8 +759,24 @@ class TradingWorker:
             return
 
         if action == Action.BUY and (not pos or pos.size == 0):
-            # === MINIMAL FILTERS (LIVE MODE) - Let the model trade freely ===
+            # === EDGE-BASED FILTERS (LIVE MODE) ===
+            # MCP analytics show ONLY 0-15% entries have positive EV:
+            # - 0-5%: +$0.60 EV (62.5% win rate, SIGNIFICANT)
+            # - 5-10%: +$0.03 EV (marginal)
+            # - 50%+: NEGATIVE EV - AVOID!
             if mode == 'live':
+                # Pre-flight balance check - avoid wasting API calls when balance too low
+                MINIMUM_TRADING_BALANCE = 1.00  # Polymarket minimum order size
+                if hasattr(self, '_last_balance_check') and self._last_balance_check < MINIMUM_TRADING_BALANCE:
+                    # Already logged recently, skip silently to reduce spam
+                    return
+                MAX_ENTRY_PRICE = 0.15  # Only enter below 15% for positive EV
+                if state.prob > MAX_ENTRY_PRICE:
+                    logger.debug(
+                        f"[LIVE] Skipping {market.asset} - price {state.prob*100:.1f}% > {MAX_ENTRY_PRICE*100:.0f}% max (no edge)"
+                    )
+                    return
+
                 # Only skip if market expiring soon (liquidity dries up)
                 MIN_TIME_REMAINING = 0.15  # 15% = ~2 minutes for 15-min market
                 if state.time_remaining < MIN_TIME_REMAINING:
@@ -1939,6 +1955,20 @@ class TradingWorker:
 
                 # Log status every 60s (separate paper and live - NO combining)
                 if (now - last_status).total_seconds() > 60:
+                    # Periodic balance check - skip live trades if balance too low
+                    if self.balance_tracker and (self.dual_mode or self.live_enabled):
+                        try:
+                            current_balance = await self.balance_tracker.get_balance()
+                            self._last_balance_check = current_balance
+                            if current_balance < 1.00:
+                                if not hasattr(self, '_low_balance_logged') or not self._low_balance_logged:
+                                    logger.warning(f"[LIVE] Balance ${current_balance:.2f} < $1.00 minimum - skipping live trades")
+                                    self._low_balance_logged = True
+                            else:
+                                self._low_balance_logged = False
+                        except Exception as e:
+                            logger.debug(f"Balance check failed: {e}")
+
                     paper_wr = self.paper_win_count / max(1, self.paper_trade_count)
                     if self.dual_mode or self.live_enabled:
                         live_wr = self.live_win_count / max(1, self.live_trade_count)
